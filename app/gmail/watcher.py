@@ -5,7 +5,7 @@ from app.db.memory import all_users
 
 SEEN = set()
 
-async def gmail_watcher(app):
+async def gmail_watcher(bot):
     await asyncio.sleep(5)
 
     while True:
@@ -17,10 +17,11 @@ async def gmail_watcher(app):
                     continue
 
                 msg = message(u["access"], m["id"])
-                otp = extract_otp(extract_text(msg))
+                text = extract_text(msg)
+                otp = extract_otp(text)
 
                 if otp:
-                    await app.bot.send_message(
+                    await bot.bot.send_message(
                         u["telegram_id"],
                         f"🔐 OTP: `{otp}`",
                         parse_mode="Markdown"

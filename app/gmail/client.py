@@ -1,29 +1,17 @@
-import requests
-from app.core.config import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, REDIRECT_URI
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 
-def exchange_code(code):
-    r = requests.post(
-        "https://oauth2.googleapis.com/token",
-        data={
-            "client_id": GOOGLE_CLIENT_ID,
-            "client_secret": GOOGLE_CLIENT_SECRET,
-            "code": code,
-            "grant_type": "authorization_code",
-            "redirect_uri": REDIRECT_URI,
-        },
-    ).json()
+def service(token):
+    creds = Credentials(token=token)
+    return build("gmail", "v1", credentials=creds)
 
-    return {
-        "access_token": r["access_token"],
-        "refresh_token": r.get("refresh_token"),
-        "email": "user@gmail.com",  # replace with profile call if needed
-    }
+def unread(token):
+    res = service(token).users().messages().list(
+        userId="me", q="is:unread"
+    ).execute()
+    return res.get("messages", [])
 
-def list_unread(token):
-    return []  # real Gmail API call here
-
-def get_message(token, msg_id):
-    return {}
-
-def unread_count(token):
-    return 0
+def message(token, msg_id):
+    return service(token).users().messages().get(
+        userId="me", id=msg_id, format="full"
+    ).execute()

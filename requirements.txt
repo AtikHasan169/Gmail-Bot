@@ -1,4 +1,7 @@
 python-telegram-bot==20.7
-requests
+google-auth
+google-auth-oauthlib
+google-api-python-client
 fastapi
 uvicorn
+httpx

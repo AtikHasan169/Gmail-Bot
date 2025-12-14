@@ -1,28 +1,13 @@
-# app/db/models.py
+from sqlalchemy import Column, Integer, String, Boolean
+from app.db.session import Base, engine
 
-import json
-import os
-from typing import List, Dict
+class User(Base):
+    __tablename__ = "users"
 
-DB_FILE = os.environ.get("DB_FILE", "/app/data/users.json")
+    telegram_id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, nullable=False)
+    access_token = Column(String, nullable=False)
+    refresh_token = Column(String, nullable=False)
+    banned = Column(Boolean, default=False)
 
-os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
-
-def _load() -> List[Dict]:
-    if not os.path.exists(DB_FILE):
-        return []
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
-
-def _save(data: List[Dict]):
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-def save_user(user: Dict):
-    users = _load()
-    users = [u for u in users if u["telegram_id"] != user["telegram_id"]]
-    users.append(user)
-    _save(users)
-
-def all_users() -> List[Dict]:
-    return _load()
+Base.metadata.create_all(bind=engine)

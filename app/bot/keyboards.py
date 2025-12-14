@@ -1,7 +1,9 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-def menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔐 Login", callback_data="login")],
-        [InlineKeyboardButton("📧 Case Variants", callback_data="case")]
-    ])
+def main_menu():
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔐 Connect Gmail", callback_data="login")],
+            [InlineKeyboardButton("📥 Inbox", callback_data="inbox")],
+        ]
+    )

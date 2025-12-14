@@ -2,73 +2,138 @@ import re
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from app.core.config import GOOGLE_CLIENT_ID
-from app.gmail.client import get_profile
-from app.db.models import save_user
+from app.alias import generate_aliases
 from app.bot.keyboards import main_menu
-from app.oauth import exchange_code
+
+from app.gmail.client import (
+    list_unread,
+    exchange_code,
+    get_profile,
+    watch_mailbox,
+)
+
+from app.core.config import (
+    GOOGLE_CLIENT_ID,
+    OAUTH_REDIRECT_URI,
+    GMAIL_SCOPES,
+    GMAIL_PUBSUB_TOPIC,
+)
+
+from app.db.session import SessionLocal
+from app.db.models import User
 
 
-# /start command
+# ───────────────────────── START ─────────────────────────
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📬 Gmail Platform Bot\n\n"
-        "• Login with Google\n"
-        "• Receive OTPs automatically\n"
-        "• Multi-user supported\n",
+        "📧 Gmail Platform Bot",
         reply_markup=main_menu()
     )
 
 
-# Inline buttons
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+# ───────────────────────── INBOX COUNT ─────────────────────────
 
-    if query.data == "login":
+async def inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db = SessionLocal()
+    user = db.query(User).filter(
+        User.telegram_id == update.effective_user.id
+    ).first()
+    db.close()
+
+    if not user:
+        await update.message.reply_text("❌ Login first")
+        return
+
+    unread = list_unread(user.access_token)
+    await update.message.reply_text(f"📥 Unread emails: {len(unread)}")
+
+
+# ───────────────────────── ALIASES ─────────────────────────
+
+async def alias(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db = SessionLocal()
+    user = db.query(User).filter(
+        User.telegram_id == update.effective_user.id
+    ).first()
+    db.close()
+
+    if not user:
+        await update.message.reply_text("❌ Login first")
+        return
+
+    # ONLY uppercase/lowercase (engine must respect this)
+    aliases = generate_aliases(user.email)
+
+    text = "📧 Email Variants (A–Z only):\n\n"
+    text += "\n".join(aliases)
+
+    await update.message.reply_text(text)
+
+
+# ───────────────────────── BUTTON HANDLER ─────────────────────────
+
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    if q.data == "login":
+        scope = " ".join(GMAIL_SCOPES)
+
         auth_url = (
             "https://accounts.google.com/o/oauth2/v2/auth"
-            "?response_type=code"
-            f"&client_id={GOOGLE_CLIENT_ID}"
-            "&redirect_uri=https://oauth.pstmn.io/v1/callback"
-            "&scope=https://www.googleapis.com/auth/gmail.readonly"
+            f"?client_id={GOOGLE_CLIENT_ID}"
+            f"&redirect_uri={OAUTH_REDIRECT_URI}"
+            f"&response_type=code"
+            f"&scope={scope}"
             "&access_type=offline"
             "&prompt=consent"
         )
 
-        await query.message.reply_text(
-            "🔐 Login with Google\n\n"
-            "1️⃣ Open this link\n"
-            "2️⃣ Login\n"
-            "3️⃣ Copy the FULL redirected URL\n"
-            "4️⃣ Paste it here\n\n"
-            f"{auth_url}"
+        await q.message.reply_text(
+            "🔐 Authorize Gmail access:\n\n" + auth_url
         )
 
 
-# 🔥 THIS WAS MISSING — OAuth redirect handler
-async def handle_redirect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+# ───────────────────────── OAUTH REDIRECT HANDLER ─────────────────────────
 
-    # extract ?code=XXXX
-    match = re.search(r"code=([^&]+)", text)
+async def handle_redirect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    User pastes redirected URL containing ?code=
+    """
+
+    match = re.search(r"code=([^&]+)", update.message.text)
     if not match:
+        await update.message.reply_text("❌ Authorization code not found")
         return
 
-    code = match.group(1)
+    # Exchange code for tokens
+    token = exchange_code(match.group(1))
 
-    token = exchange_code(code)
+    # Fetch Gmail profile
     profile = get_profile(token["access_token"])
+    email = profile["emailAddress"]
 
-    save_user(
-        telegram_id=update.effective_user.id,
-        email=profile["emailAddress"],
-        access_token=token["access_token"],
-        refresh_token=token["refresh_token"],
+    # Save / update user
+    db = SessionLocal()
+    db.merge(
+        User(
+            telegram_id=update.effective_user.id,
+            email=email,
+            access_token=token["access_token"],
+            refresh_token=token.get("refresh_token"),
+            banned=False,
+        )
+    )
+    db.commit()
+    db.close()
+
+    # 🔔 START GMAIL PUSH (CRITICAL)
+    watch_mailbox(
+        token["access_token"],
+        GMAIL_PUBSUB_TOPIC
     )
 
     await update.message.reply_text(
-        f"✅ Connected Gmail:\n`{profile['emailAddress']}`",
-        parse_mode="Markdown",
-        reply_markup=main_menu()
+        f"✅ Gmail connected successfully:\n{email}"
     )

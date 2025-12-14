@@ -1,16 +1,20 @@
 import base64
 import re
 
-OTP_RE = re.compile(r"\b\d{4,8}\b")
+OTP_REGEX = re.compile(r"\b(\d{4,8})\b")
 
 def extract_text(msg):
-    parts = msg["payload"].get("parts", [])
+    parts = msg.get("payload", {}).get("parts", [])
+    text = ""
+
     for p in parts:
-        if p["mimeType"] == "text/plain":
-            data = p["body"]["data"]
-            return base64.urlsafe_b64decode(data).decode()
-    return ""
+        if p.get("mimeType") == "text/plain":
+            data = p["body"].get("data")
+            if data:
+                text += base64.urlsafe_b64decode(data).decode(errors="ignore")
+
+    return text
 
 def extract_otp(text):
-    m = OTP_RE.search(text)
-    return m.group(0) if m else None
+    m = OTP_REGEX.search(text)
+    return m.group(1) if m else None

@@ -1,22 +1,45 @@
-from google.oauth2.credentials import Credentials
+import base64
+import re
 from googleapiclient.discovery import build
-from app.config import SCOPES
+from google.oauth2.credentials import Credentials
+from app.config import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, SCOPES
 
-def service(token: dict):
+OTP_REGEX = re.compile(r"\b(\d{4,8})\b")
+
+def build_service(user):
     creds = Credentials(
-        token=token["access"],
-        refresh_token=token["refresh"],
+        token=user["access"],
+        refresh_token=user["refresh"],
         token_uri="https://oauth2.googleapis.com/token",
-        scopes=SCOPES
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        scopes=SCOPES,
     )
-    return build("gmail", "v1", credentials=creds)
+    return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
-def get_email(token: dict) -> str:
-    profile = service(token).users().getProfile(userId="me").execute()
-    return profile["emailAddress"]
 
-def unread_count(token: dict) -> int:
-    res = service(token).users().messages().list(
-        userId="me", q="is:unread"
+def fetch_unread(service):
+    res = service.users().messages().list(
+        userId="me",
+        labelIds=["INBOX", "UNREAD"],
+        maxResults=5,
     ).execute()
-    return len(res.get("messages", []))
+    return res.get("messages", [])
+
+
+def extract_otp(service, msg_id):
+    msg = service.users().messages().get(
+        userId="me", id=msg_id, format="full"
+    ).execute()
+
+    parts = msg["payload"].get("parts", [])
+    text = ""
+
+    for p in parts:
+        if p["mimeType"] == "text/plain":
+            data = p["body"].get("data")
+            if data:
+                text += base64.urlsafe_b64decode(data).decode(errors="ignore")
+
+    m = OTP_REGEX.search(text)
+    return m.group(1) if m else None

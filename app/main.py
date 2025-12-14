@@ -1,14 +1,17 @@
-from fastapi import FastAPI
-from app.db import c
+import threading
+from app.core.logging import setup_logging
+from app.bot.app import build_app
+from app.admin.dashboard import app as dashboard
+import uvicorn
 
-app = FastAPI()
+def run_dashboard():
+    uvicorn.run(dashboard, host="0.0.0.0", port=8000)
 
-@app.get("/")
-def root():
-    return {"status": "running"}
+def main():
+    setup_logging()
+    threading.Thread(target=run_dashboard, daemon=True).start()
+    bot = build_app()
+    bot.run_polling()
 
-@app.get("/stats")
-def stats():
-    c.execute("SELECT COUNT(*) FROM users")
-    users = c.fetchone()[0]
-    return {"users": users}
+if __name__ == "__main__":
+    main()

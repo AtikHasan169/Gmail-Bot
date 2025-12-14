@@ -2,9 +2,14 @@ import base64
 import re
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from app.config import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, SCOPES
+from app.config import (
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    SCOPES,
+)
 
 OTP_REGEX = re.compile(r"\b(\d{4,8})\b")
+
 
 def build_service(user):
     creds = Credentials(
@@ -18,28 +23,36 @@ def build_service(user):
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
 
-def fetch_unread(service):
+def fetch_unread_ids(user, max_results=5):
+    service = build_service(user)
     res = service.users().messages().list(
         userId="me",
         labelIds=["INBOX", "UNREAD"],
-        maxResults=5,
+        maxResults=max_results,
     ).execute()
     return res.get("messages", [])
 
 
-def extract_otp(service, msg_id):
+def extract_otp(user, msg_id):
+    service = build_service(user)
     msg = service.users().messages().get(
-        userId="me", id=msg_id, format="full"
+        userId="me",
+        id=msg_id,
+        format="full",
     ).execute()
 
-    parts = msg["payload"].get("parts", [])
+    payload = msg.get("payload", {})
+    parts = payload.get("parts", [])
+
     text = ""
 
     for p in parts:
-        if p["mimeType"] == "text/plain":
-            data = p["body"].get("data")
+        if p.get("mimeType") == "text/plain":
+            data = p.get("body", {}).get("data")
             if data:
-                text += base64.urlsafe_b64decode(data).decode(errors="ignore")
+                text += base64.urlsafe_b64decode(data).decode(
+                    errors="ignore"
+                )
 
     m = OTP_REGEX.search(text)
     return m.group(1) if m else None

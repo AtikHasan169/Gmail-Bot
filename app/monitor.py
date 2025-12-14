@@ -1,39 +1,39 @@
 import asyncio
-from app.gmail import build_service, fetch_unread, extract_otp
-from app.db import get_all_users, get_last_msg, set_last_msg, inc_otp
+from app.db import get_all_users, get_last_otp, set_last_otp
+from app.gmail import fetch_unread_ids, extract_otp
 
-async def otp_watcher(app):
-    await asyncio.sleep(5)
+
+async def email_puller(app):
+    await asyncio.sleep(5)  # wait for bot startup
 
     while True:
         users = get_all_users()
 
         for uid, user in users.items():
-            if not user["otp_enabled"]:
-                continue
-
             try:
-                service = build_service(user)
-                msgs = fetch_unread(service)
+                messages = fetch_unread_ids(user)
+                if not messages:
+                    continue
 
-                last_seen = get_last_msg(uid)
+                last_seen = get_last_otp(uid)
 
-                for m in msgs:
-                    if m["id"] == last_seen:
+                for m in messages:
+                    msg_id = m["id"]
+
+                    if msg_id == last_seen:
                         break
 
-                    otp = extract_otp(service, m["id"])
+                    otp = extract_otp(user, msg_id)
                     if otp:
                         await app.bot.send_message(
                             chat_id=uid,
                             text=f"🔐 OTP Code:\n\n`{otp}`",
                             parse_mode="Markdown",
                         )
-                        set_last_msg(uid, m["id"])
-                        inc_otp(uid)
+                        set_last_otp(uid, msg_id)
                         break
 
             except Exception:
-                pass
+                pass  # never crash polling
 
         await asyncio.sleep(20)

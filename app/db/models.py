@@ -1,37 +1,20 @@
-from app.db.session import conn
+_USERS = {}
 
-conn.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    telegram_id INTEGER PRIMARY KEY,
-    email TEXT,
-    access_token TEXT,
-    refresh_token TEXT,
-    banned INTEGER DEFAULT 0
-)
-""")
+def add_user(telegram_id, email, access_token, refresh_token):
+    _USERS[telegram_id] = {
+        "telegram_id": telegram_id,
+        "email": email,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "banned": False,
+    }
 
-conn.commit()
-
-
-def upsert_user(tg, email, access, refresh):
-    conn.execute("""
-    INSERT INTO users VALUES (?,?,?,?,0)
-    ON CONFLICT(telegram_id)
-    DO UPDATE SET
-        email=excluded.email,
-        access_token=excluded.access_token,
-        refresh_token=excluded.refresh_token
-    """, (tg, email, access, refresh))
-    conn.commit()
-
-
-def get_user(tg):
-    r = conn.execute(
-        "SELECT * FROM users WHERE telegram_id=?",
-        (tg,)
-    ).fetchone()
-    return dict(r) if r else None
-
+def get_user(telegram_id):
+    return _USERS.get(telegram_id)
 
 def all_users():
-    return conn.execute("SELECT * FROM users").fetchall()
+    return list(_USERS.values())
+
+def ban_user(telegram_id):
+    if telegram_id in _USERS:
+        _USERS[telegram_id]["banned"] = True

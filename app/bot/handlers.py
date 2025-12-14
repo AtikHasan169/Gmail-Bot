@@ -2,18 +2,18 @@ import re
 from telegram import Update
 from telegram.ext import ContextTypes
 from app.bot.keyboards import main_menu
-from app.db.models import upsert_user, get_user
-from app.core.config import GOOGLE_CLIENT_ID
-from app.gmail.client import profile
-from app.gmail.alias import generate_aliases
+from app.core.config import GOOGLE_CLIENT_ID, REDIRECT_URI, ADMIN_IDS
+from app.db.models import add_user, get_user
+from app.gmail.client import unread_count
+from app.alias_engine import generate_aliases
 
-async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 Gmail Platform Bot",
+        "📧 Gmail Platform Bot",
         reply_markup=main_menu()
     )
 
-async def buttons(update: Update, ctx):
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
@@ -21,38 +21,47 @@ async def buttons(update: Update, ctx):
     if q.data == "login":
         url = (
             "https://accounts.google.com/o/oauth2/auth"
-            "?response_type=code"
-            f"&client_id={GOOGLE_CLIENT_ID}"
-            "&redirect_uri=http://localhost"
+            f"?client_id={GOOGLE_CLIENT_ID}"
+            f"&redirect_uri={REDIRECT_URI}"
+            "&response_type=code"
             "&scope=https://www.googleapis.com/auth/gmail.readonly"
             "&access_type=offline&prompt=consent"
         )
-        return await q.message.reply_text(url)
+        await q.message.reply_text(url)
 
-    user = get_user(uid)
-    if not user:
-        return await q.message.reply_text("Login first")
+    elif q.data == "inbox":
+        user = get_user(uid)
+        if not user:
+            return await q.message.reply_text("❌ Login first")
+        count = unread_count(user["access_token"])
+        await q.message.reply_text(f"📥 Unread emails: {count}")
 
-    if q.data == "alias":
+    elif q.data == "alias":
+        user = get_user(uid)
+        if not user:
+            return await q.message.reply_text("❌ Login first")
         aliases = generate_aliases(user["email"])
-        return await q.message.reply_text(
-            "\n".join(aliases[:40])
-        )
+        await q.message.reply_text("\n".join(aliases))
 
-async def oauth_redirect(update: Update, ctx):
+    elif q.data == "admin":
+        if uid not in ADMIN_IDS:
+            return await q.message.reply_text("⛔ Admin only")
+        await q.message.reply_text("🛠 Admin panel active")
+
+async def oauth_redirect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     m = re.search(r"code=([^&]+)", update.message.text)
     if not m:
         return
 
-    from app.oauth import exchange_code
-    tok = exchange_code(m.group(1))
-    email = profile(tok["access_token"])["emailAddress"]
+    # exchange handled in gmail.client
+    from app.gmail.client import exchange_code
 
-    upsert_user(
+    token = exchange_code(m.group(1))
+    add_user(
         update.effective_user.id,
-        email,
-        tok["access_token"],
-        tok["refresh_token"]
+        token["email"],
+        token["access_token"],
+        token["refresh_token"],
     )
 
-    await update.message.reply_text("✅ Connected")
+    await update.message.reply_text("✅ Gmail connected")

@@ -7,12 +7,14 @@ SEEN = set()
 
 async def gmail_watcher(app, interval: int):
     await asyncio.sleep(5)
+
     while True:
         for u in all_users():
             if u["banned"]:
                 continue
 
             msgs = list_unread(u["access_token"])
+
             for m in msgs:
                 key = f'{u["telegram_id"]}:{m["id"]}'
                 if key in SEEN:
@@ -24,10 +26,11 @@ async def gmail_watcher(app, interval: int):
 
                 if otp:
                     await app.bot.send_message(
-                        u["telegram_id"],
-                        f"🔐 OTP Detected: `{otp}`",
+                        chat_id=u["telegram_id"],
+                        text=f"🔐 OTP Detected: `{otp}`",
                         parse_mode="Markdown"
                     )
 
                 SEEN.add(key)
+
         await asyncio.sleep(interval)

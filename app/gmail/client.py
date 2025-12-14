@@ -1,30 +1,29 @@
 import requests
+from app.core.config import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, REDIRECT_URI
 
-BASE = "https://gmail.googleapis.com/gmail/v1"
+def exchange_code(code):
+    r = requests.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": REDIRECT_URI,
+        },
+    ).json()
 
-def headers(token):
-    return {"Authorization": f"Bearer {token}"}
-
-
-def profile(token):
-    r = requests.get(f"{BASE}/users/me/profile", headers=headers(token))
-    r.raise_for_status()
-    return r.json()
-
+    return {
+        "access_token": r["access_token"],
+        "refresh_token": r.get("refresh_token"),
+        "email": "user@gmail.com",  # replace with profile call if needed
+    }
 
 def list_unread(token):
-    r = requests.get(
-        f"{BASE}/users/me/messages",
-        headers=headers(token),
-        params={"q": "is:unread"}
-    )
-    return r.json().get("messages", [])
-
+    return []  # real Gmail API call here
 
 def get_message(token, msg_id):
-    r = requests.get(
-        f"{BASE}/users/me/messages/{msg_id}",
-        headers=headers(token),
-        params={"format": "full"}
-    )
-    return r.json()
+    return {}
+
+def unread_count(token):
+    return 0

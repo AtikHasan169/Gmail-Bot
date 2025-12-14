@@ -23,6 +23,24 @@ def build_service(user):
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
 
+# ─── LOGIN SUPPORT ─────────────────────────────
+
+def get_email(token):
+    creds = Credentials(
+        token=token["access_token"],
+        refresh_token=token.get("refresh_token"),
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        scopes=SCOPES,
+    )
+    service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+    profile = service.users().getProfile(userId="me").execute()
+    return profile["emailAddress"]
+
+
+# ─── OTP PULLING ───────────────────────────────
+
 def fetch_unread_ids(user, max_results=5):
     service = build_service(user)
     res = service.users().messages().list(

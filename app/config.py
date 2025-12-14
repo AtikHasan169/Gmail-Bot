@@ -1,10 +1,16 @@
-from cryptography.fernet import Fernet
-from app.config import BOT_SECRET_KEY
+import os
 
-fernet = Fernet(BOT_SECRET_KEY.encode())
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-def encrypt(text: str) -> str:
-    return fernet.encrypt(text.encode()).decode()
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 
-def decrypt(text: str) -> str:
-    return fernet.decrypt(text.encode()).decode()
+REDIRECT_URI = "http://localhost"
+
+SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+BOT_SECRET_KEY = os.getenv("BOT_SECRET_KEY")
+
+ADMINS = [
+    int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.isdigit()
+]

@@ -12,7 +12,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from app.config import BOT_TOKEN, GOOGLE_CLIENT_ID
 from app.oauth import exchange_code
 from app.gmail import get_email
-from app.db import add_user, get_user
+from app.db import add_user
 from app.monitor import email_puller
 
 
@@ -63,15 +63,22 @@ async def handle_redirect(update: Update, ctx):
     await update.message.reply_text("✅ Gmail connected")
 
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
+# 🔥 THIS IS THE IMPORTANT PART
+async def post_init(application):
+    application.create_task(email_puller(application))
+
+
+app = (
+    ApplicationBuilder()
+    .token(BOT_TOKEN)
+    .post_init(post_init)   # ✅ correct place
+    .build()
+)
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(buttons))
 app.add_handler(
     MessageHandler(filters.TEXT & filters.Regex("http://localhost"), handle_redirect)
 )
-
-# 🔥 START OTP PULLER
-app.create_task(email_puller(app))
 
 app.run_polling()

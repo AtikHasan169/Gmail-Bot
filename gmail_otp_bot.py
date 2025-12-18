@@ -6,6 +6,7 @@ import random
 import datetime
 import time
 import signal
+import sys
 from base64 import urlsafe_b64decode
 from email import message_from_bytes
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -25,6 +26,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import Conflict
 
 # --- CONFIGURATION (Load from Environment) ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -42,6 +44,7 @@ if MONGO_URI:
     seen_col = db['seen_messages']
 else:
     print("WARNING: MONGO_URI not found. MongoDB operations will fail.")
+    sys.exit(1)
 
 # --- UI GENERATOR ---
 async def get_ui_content(uid_str):
@@ -270,15 +273,25 @@ async def watcher(app):
 
 # --- MAIN ---
 async def main():
-    # Start Dummy Web Server for Railway Health Check
+    if not BOT_TOKEN:
+        print("CRITICAL: BOT_TOKEN is not set.")
+        return
+
+    # Start Dummy Web Server for Railway Health Check IMMEDIATELY
     app_runner = web.AppRunner(web.Application())
     await app_runner.setup()
     await web.TCPSite(app_runner, '0.0.0.0', PORT).start()
 
-    # Important: Small sleep to allow old instances to disconnect from Telegram
-    await asyncio.sleep(2)
+    # Wait longer to ensure old process on Railway is killed
+    print("Waiting 10 seconds to avoid Conflict error...")
+    await asyncio.sleep(10)
 
     bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # Force delete webhook in case it was set
+    print("Deleting potential webhooks...")
+    await bot_app.bot.delete_webhook()
+
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CallbackQueryHandler(on_callback))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
@@ -289,9 +302,22 @@ async def main():
     
     print(f"--- BOT ONLINE (PORT: {PORT}) ---")
     
-    # drop_pending_updates is critical here to resolve the Conflict error on startup
-    await bot_app.updater.start_polling(drop_pending_updates=True)
-    
+    # Exponential Backoff for polling start
+    retries = 5
+    delay = 5
+    for i in range(retries):
+        try:
+            await bot_app.updater.start_polling(drop_pending_updates=True)
+            break
+        except Conflict:
+            if i < retries - 1:
+                print(f"Conflict detected. Retrying in {delay} seconds... (Attempt {i+1}/{retries})")
+                await asyncio.sleep(delay)
+                delay *= 2
+            else:
+                print("Could not resolve conflict. Shutting down.")
+                raise
+
     # Setup graceful shutdown signals
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -310,3 +336,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit): 
         pass
+    except Exception as e:
+        print(f"Fatal error: {e}")

@@ -43,7 +43,7 @@ if MONGO_URI:
     users_col = db['users']
     seen_col = db['seen_messages']
 else:
-    print("WARNING: MONGO_URI not found. MongoDB operations will fail.")
+    print("CRITICAL ERROR: MONGO_URI not found.")
     sys.exit(1)
 
 # --- UI GENERATOR ---
@@ -68,16 +68,21 @@ async def get_ui_content(uid_str):
     last_check = user.get("last_check", "Never")
     latest_otp = user.get("latest_otp", "None Yet")
     gen_alias = user.get("last_gen", "None")
-    status_icon = "🟢" if user.get("access") else "🔴"
     
+    # Monitoring Status
+    is_active = user.get("is_active", True)
+    status_icon = "🟢 ACTIVE" if is_active else "🟡 STOPPED"
+    
+    # 30-Second "NEW" Badge Logic
     last_ts = user.get("last_otp_timestamp", 0)
     is_fresh = (time.time() - last_ts) < 30
     otp_header = "🚨 **[NEW] OTP RECEIVED** 🚨" if is_fresh else "📨 **Latest OTP:**"
 
     text = (
-        f"🚀 **LIVE SESSION INTERFACE** {status_icon}\n"
+        f"🚀 **LIVE SESSION INTERFACE**\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 **Account:** `{email}`\n"
+        f"📡 **Monitor:** {status_icon}\n"
         f"🔑 **Total Captured:** `{captured}`\n"
         f"🕒 **Last Scan:** `{last_check}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -164,6 +169,10 @@ async def process_user_emails(uid_str, bot, session, manual=False):
     user = await users_col.find_one({"uid": uid_str})
     if not user: return False
     
+    # Skip if monitoring is disabled (unless manual)
+    if not manual and not user.get("is_active", True):
+        return False
+    
     messages = await fetch_unread(uid_str, user, session, limit=5 if manual else 10)
     new_otp_found = False
     
@@ -207,7 +216,14 @@ async def process_user_emails(uid_str, bot, session, manual=False):
 # --- TELEGRAM HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid_str = str(update.effective_user.id)
-    await update.message.reply_text("🔄 Syncing Live Interface...", reply_markup=ReplyKeyboardMarkup([["/start"]], resize_keyboard=True))
+    
+    # Keyboard with Start/Stop
+    kb_markup = ReplyKeyboardMarkup([
+        ["Start Monitoring", "Stop Monitoring"],
+        ["🔄 Sync Interface"]
+    ], resize_keyboard=True)
+    
+    await update.message.reply_text("🎮 Monitoring Control Panel Active.", reply_markup=kb_markup)
     
     text, kb = await get_ui_content(uid_str)
     sent = await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -217,6 +233,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid_str, msg = str(update.effective_user.id), update.message.text
 
+    # Monitoring Controls
+    if msg == "Start Monitoring":
+        await users_col.update_one({"uid": uid_str}, {"$set": {"is_active": True}})
+        await update_live_ui(uid_str, context.bot)
+        return
+    
+    if msg == "Stop Monitoring":
+        await users_col.update_one({"uid": uid_str}, {"$set": {"is_active": False}})
+        await update_live_ui(uid_str, context.bot)
+        return
+    
+    if msg == "🔄 Sync Interface":
+        return await start(update, context)
+
+    # Gmail Auth Handling
     if "4/" in msg or len(msg) > 30:
         async with aiohttp.ClientSession() as s:
             data = {"client_id": CLIENT_ID, "client_secret": SECRET, "code": msg, "grant_type": "authorization_code", "redirect_uri": REDIRECT_URI}
@@ -229,7 +260,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             "email": prof["emailAddress"], 
                             "access": t["access_token"], 
                             "refresh": t.get("refresh_token", ""),
-                            "captured": 0, "last_otp_timestamp": 0
+                            "captured": 0, 
+                            "last_otp_timestamp": 0,
+                            "is_active": True
                         }}, upsert=True)
                         user_data = await users_col.find_one({"uid": uid_str})
                         m_list = await fetch_unread(uid_str, user_data, s)
@@ -256,7 +289,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await users_col.update_one({"uid": uid_str}, {"$set": {"latest_otp": "Cleared", "captured": 0, "last_otp_timestamp": 0}})
         await update_live_ui(uid_str, context.bot)
 
-# --- HEALTH CHECK SERVER (FOR RAILWAY) ---
+# --- HEALTH CHECK SERVER ---
 async def health_check(request): return web.Response(text="Bot is running")
 
 # --- BACKGROUND WATCHER ---
@@ -264,7 +297,9 @@ async def watcher(app):
     async with aiohttp.ClientSession() as session:
         while True:
             try:
-                users = await users_col.find({"access": {"$exists": True}}).to_list(None)
+                # ONLY FETCH USERS WHO HAVE MONITORING ENABLED
+                cursor = users_col.find({"access": {"$exists": True}, "is_active": True})
+                users = await cursor.to_list(None)
                 if users:
                     await asyncio.gather(*(process_user_emails(u["uid"], app.bot, session) for u in users), return_exceptions=True)
             except Exception as e:
@@ -274,22 +309,19 @@ async def watcher(app):
 # --- MAIN ---
 async def main():
     if not BOT_TOKEN:
-        print("CRITICAL: BOT_TOKEN is not set.")
+        print("CRITICAL ERROR: BOT_TOKEN not set.")
         return
 
-    # Start Dummy Web Server for Railway Health Check IMMEDIATELY
+    # Start Health Check Server
     app_runner = web.AppRunner(web.Application())
     await app_runner.setup()
     await web.TCPSite(app_runner, '0.0.0.0', PORT).start()
 
-    # Wait longer to ensure old process on Railway is killed
     print("Waiting 10 seconds to avoid Conflict error...")
     await asyncio.sleep(10)
 
     bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
     
-    # Force delete webhook in case it was set
-    print("Deleting potential webhooks...")
     await bot_app.bot.delete_webhook()
 
     bot_app.add_handler(CommandHandler("start", start))
@@ -302,7 +334,6 @@ async def main():
     
     print(f"--- BOT ONLINE (PORT: {PORT}) ---")
     
-    # Exponential Backoff for polling start
     retries = 5
     delay = 5
     for i in range(retries):
@@ -311,14 +342,12 @@ async def main():
             break
         except Conflict:
             if i < retries - 1:
-                print(f"Conflict detected. Retrying in {delay} seconds... (Attempt {i+1}/{retries})")
+                print(f"Conflict detected. Retrying in {delay} seconds...")
                 await asyncio.sleep(delay)
                 delay *= 2
             else:
-                print("Could not resolve conflict. Shutting down.")
                 raise
 
-    # Setup graceful shutdown signals
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):

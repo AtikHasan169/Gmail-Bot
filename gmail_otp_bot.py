@@ -181,7 +181,11 @@ async def process_user_emails(uid_str, bot, session, manual=False):
     messages = await fetch_unread(uid_str, user, session, limit=5 if manual else 10)
     new_otp_found = False
     
-    for m in messages:
+    # We use reversed(messages) because the API usually returns Newest -> Oldest.
+    # By reversing, we process Oldest -> Newest. 
+    # This ensures that the LAST iteration (the newest email) overwrites the DB, 
+    # so 'latest_otp' correctly reflects the most recent message.
+    for m in reversed(messages):
         mid = m['id']
         key = f"{uid_str}:{mid}"
         

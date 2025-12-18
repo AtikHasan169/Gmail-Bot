@@ -5,6 +5,7 @@ import aiohttp
 import random
 import datetime
 import time
+import signal
 from base64 import urlsafe_b64decode
 from email import message_from_bytes
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -34,12 +35,6 @@ PORT = int(os.environ.get('PORT', 8080))
 REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
 
 # --- DATABASE SETUP ---
-# client = AsyncIOMotorClient(MONGO_URI)
-# db = client['gmail_otp_bot']
-# users_col = db['users']
-# seen_col = db['seen_messages']
-
-# Fallback for testing environment
 if MONGO_URI:
     client = AsyncIOMotorClient(MONGO_URI)
     db = client['gmail_otp_bot']
@@ -65,7 +60,6 @@ async def get_ui_content(uid_str):
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔐 Login Google", url=url)]])
         return text, kb
 
-    # Extract Data
     email = user.get("email", "Unknown")
     captured = user.get("captured", 0)
     last_check = user.get("last_check", "Never")
@@ -73,7 +67,6 @@ async def get_ui_content(uid_str):
     gen_alias = user.get("last_gen", "None")
     status_icon = "🟢" if user.get("access") else "🔴"
     
-    # 30-Second "NEW" Badge Logic
     last_ts = user.get("last_otp_timestamp", 0)
     is_fresh = (time.time() - last_ts) < 30
     otp_header = "🚨 **[NEW] OTP RECEIVED** 🚨" if is_fresh else "📨 **Latest OTP:**"
@@ -236,7 +229,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             "captured": 0, "last_otp_timestamp": 0
                         }}, upsert=True)
                         user_data = await users_col.find_one({"uid": uid_str})
-                        # Mark existing unread as seen to prevent immediate notification of old mails
                         m_list = await fetch_unread(uid_str, user_data, s)
                         for m in m_list: await seen_col.update_one({"key": f"{uid_str}:{m['id']}"}, {"$set": {"at": time.time()}}, upsert=True)
                         await update_live_ui(uid_str, context.bot)
@@ -268,12 +260,12 @@ async def health_check(request): return web.Response(text="Bot is running")
 async def watcher(app):
     async with aiohttp.ClientSession() as session:
         while True:
-            # Fetch all active users and scan in parallel
-            users = await users_col.find({"access": {"$exists": True}}).to_list(None)
-            if users:
-                await asyncio.gather(*(process_user_emails(u["uid"], app.bot, session) for u in users), return_exceptions=True)
-            
-            # Fast loop for high-speed detection (2 seconds)
+            try:
+                users = await users_col.find({"access": {"$exists": True}}).to_list(None)
+                if users:
+                    await asyncio.gather(*(process_user_emails(u["uid"], app.bot, session) for u in users), return_exceptions=True)
+            except Exception as e:
+                print(f"Watcher error: {e}")
             await asyncio.sleep(2)
 
 # --- MAIN ---
@@ -282,6 +274,9 @@ async def main():
     app_runner = web.AppRunner(web.Application())
     await app_runner.setup()
     await web.TCPSite(app_runner, '0.0.0.0', PORT).start()
+
+    # Important: Small sleep to allow old instances to disconnect from Telegram
+    await asyncio.sleep(2)
 
     bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
@@ -293,9 +288,25 @@ async def main():
     asyncio.create_task(watcher(bot_app))
     
     print(f"--- BOT ONLINE (PORT: {PORT}) ---")
+    
+    # drop_pending_updates is critical here to resolve the Conflict error on startup
     await bot_app.updater.start_polling(drop_pending_updates=True)
-    await asyncio.Event().wait()
+    
+    # Setup graceful shutdown signals
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop_event.set)
+        
+    await stop_event.wait()
+    
+    print("--- STOPPING BOT ---")
+    await bot_app.updater.stop()
+    await bot_app.stop()
+    await bot_app.shutdown()
 
 if __name__ == "__main__":
-    try: asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit): pass
+    try: 
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit): 
+        pass

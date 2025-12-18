@@ -1,1 +1,0 @@
-from app.alias.engine import generate_aliases

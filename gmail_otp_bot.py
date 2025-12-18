@@ -8,6 +8,7 @@ import time
 from base64 import urlsafe_b64decode
 from email import message_from_bytes
 from motor.motor_asyncio import AsyncIOMotorClient
+from aiohttp import web
 
 from telegram import (
     Update,
@@ -24,20 +25,28 @@ from telegram.ext import (
     filters,
 )
 
-# --- LOAD CONFIG FROM ENVIRONMENT ---
+# --- CONFIGURATION (Load from Environment) ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CLIENT_ID = os.getenv("CLIENT_ID")
 SECRET = os.getenv("CLIENT_SECRET")
 MONGO_URI = os.getenv("MONGO_URI")
-# Railway often provides a PORT variable, though not always needed for polling bots.
 PORT = int(os.environ.get('PORT', 8080))
 REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
 
 # --- DATABASE SETUP ---
-client = AsyncIOMotorClient(MONGO_URI)
-db = client['gmail_otp_bot']
-users_col = db['users']
-seen_col = db['seen_messages']
+# client = AsyncIOMotorClient(MONGO_URI)
+# db = client['gmail_otp_bot']
+# users_col = db['users']
+# seen_col = db['seen_messages']
+
+# Fallback for testing environment
+if MONGO_URI:
+    client = AsyncIOMotorClient(MONGO_URI)
+    db = client['gmail_otp_bot']
+    users_col = db['users']
+    seen_col = db['seen_messages']
+else:
+    print("WARNING: MONGO_URI not found. MongoDB operations will fail.")
 
 # --- UI GENERATOR ---
 async def get_ui_content(uid_str):
@@ -56,6 +65,7 @@ async def get_ui_content(uid_str):
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔐 Login Google", url=url)]])
         return text, kb
 
+    # Extract Data
     email = user.get("email", "Unknown")
     captured = user.get("captured", 0)
     last_check = user.get("last_check", "Never")
@@ -63,6 +73,7 @@ async def get_ui_content(uid_str):
     gen_alias = user.get("last_gen", "None")
     status_icon = "🟢" if user.get("access") else "🔴"
     
+    # 30-Second "NEW" Badge Logic
     last_ts = user.get("last_otp_timestamp", 0)
     is_fresh = (time.time() - last_ts) < 30
     otp_header = "🚨 **[NEW] OTP RECEIVED** 🚨" if is_fresh else "📨 **Latest OTP:**"
@@ -157,7 +168,7 @@ async def process_user_emails(uid_str, bot, session, manual=False):
     user = await users_col.find_one({"uid": uid_str})
     if not user: return False
     
-    messages = await fetch_unread(uid_str, user, session, limit=5 if manual else None)
+    messages = await fetch_unread(uid_str, user, session, limit=5 if manual else 10)
     new_otp_found = False
     
     for m in messages:
@@ -197,10 +208,10 @@ async def process_user_emails(uid_str, bot, session, manual=False):
         await update_live_ui(uid_str, bot)
     return new_otp_found
 
-# --- HANDLERS ---
+# --- TELEGRAM HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid_str = str(update.effective_user.id)
-    await update.message.reply_text("🔄 Session Synchronizing...", reply_markup=ReplyKeyboardMarkup([["/start"]], resize_keyboard=True))
+    await update.message.reply_text("🔄 Syncing Live Interface...", reply_markup=ReplyKeyboardMarkup([["/start"]], resize_keyboard=True))
     
     text, kb = await get_ui_content(uid_str)
     sent = await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -208,94 +219,83 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await users_col.update_one({"uid": uid_str}, {"$set": {"main_msg_id": sent.message_id}}, upsert=True)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid_str = str(update.effective_user.id)
-    msg = update.message.text
+    uid_str, msg = str(update.effective_user.id), update.message.text
 
     if "4/" in msg or len(msg) > 30:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession() as s:
             data = {"client_id": CLIENT_ID, "client_secret": SECRET, "code": msg, "grant_type": "authorization_code", "redirect_uri": REDIRECT_URI}
-            async with session.post("https://oauth2.googleapis.com/token", data=data) as r:
-                token = await r.json()
-                if "access_token" in token:
-                    headers = {"Authorization": f"Bearer {token['access_token']}"}
-                    async with session.get("https://www.googleapis.com/gmail/v1/users/me/profile", headers=headers) as p:
+            async with s.post("https://oauth2.googleapis.com/token", data=data) as r:
+                t = await r.json()
+                if "access_token" in t:
+                    async with s.get("https://www.googleapis.com/gmail/v1/users/me/profile", headers={"Authorization": f"Bearer {t['access_token']}"}) as p:
                         prof = await p.json()
                         await users_col.update_one({"uid": uid_str}, {"$set": {
                             "email": prof["emailAddress"], 
-                            "access": token["access_token"], 
-                            "refresh": token.get("refresh_token", ""),
-                            "captured": 0,
-                            "last_otp_timestamp": 0
+                            "access": t["access_token"], 
+                            "refresh": t.get("refresh_token", ""),
+                            "captured": 0, "last_otp_timestamp": 0
                         }}, upsert=True)
-                        
                         user_data = await users_col.find_one({"uid": uid_str})
-                        m_list = await fetch_unread(uid_str, user_data, session)
-                        for m in m_list:
-                            await seen_col.update_one({"key": f"{uid_str}:{m['id']}"}, {"$set": {"at": time.time()}}, upsert=True)
-                        
+                        # Mark existing unread as seen to prevent immediate notification of old mails
+                        m_list = await fetch_unread(uid_str, user_data, s)
+                        for m in m_list: await seen_col.update_one({"key": f"{uid_str}:{m['id']}"}, {"$set": {"at": time.time()}}, upsert=True)
                         await update_live_ui(uid_str, context.bot)
         try: await update.message.delete()
         except: pass
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    uid_str = str(query.from_user.id)
-    data = query.data
-    await query.answer()
-
+    q = update.callback_query
+    uid_str, data = str(q.from_user.id), q.data
+    await q.answer()
     if data == "ui_refresh":
-        async with aiohttp.ClientSession() as session:
-            await process_user_emails(uid_str, context.bot, session, manual=True)
-
+        async with aiohttp.ClientSession() as s: await process_user_emails(uid_str, context.bot, s, manual=True)
     elif data == "ui_gen":
-        user = await users_col.find_one({"uid": uid_str})
-        if user:
-            user_part, dom = user["email"].split("@")
+        u = await users_col.find_one({"uid": uid_str})
+        if u:
+            user_part, dom = u["email"].split("@")
             mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in user_part)
             await users_col.update_one({"uid": uid_str}, {"$set": {"last_gen": f"{mixed}@{dom}"}})
             await update_live_ui(uid_str, context.bot)
-
-    elif data == "ui_logout":
-        await users_col.delete_one({"uid": uid_str})
-        await update_live_ui(uid_str, context.bot)
-
-    elif data == "ui_clear":
+    elif data == "ui_logout": await users_col.delete_one({"uid": uid_str}); await update_live_ui(uid_str, context.bot)
+    elif data == "ui_clear": 
         await users_col.update_one({"uid": uid_str}, {"$set": {"latest_otp": "Cleared", "captured": 0, "last_otp_timestamp": 0}})
         await update_live_ui(uid_str, context.bot)
 
-# --- BACKGROUND MONITOR ---
+# --- HEALTH CHECK SERVER (FOR RAILWAY) ---
+async def health_check(request): return web.Response(text="Bot is running")
+
+# --- BACKGROUND WATCHER ---
 async def watcher(app):
     async with aiohttp.ClientSession() as session:
         while True:
-            cursor = users_col.find({"access": {"$exists": True}})
-            async for user in cursor:
-                try:
-                    await process_user_emails(user["uid"], app.bot, session)
-                except Exception as e:
-                    print(f"Error processing {user['uid']}: {e}")
-            await asyncio.sleep(8)
+            # Fetch all active users and scan in parallel
+            users = await users_col.find({"access": {"$exists": True}}).to_list(None)
+            if users:
+                await asyncio.gather(*(process_user_emails(u["uid"], app.bot, session) for u in users), return_exceptions=True)
+            
+            # Fast loop for high-speed detection (2 seconds)
+            await asyncio.sleep(2)
 
 # --- MAIN ---
 async def main():
-    if not BOT_TOKEN:
-        print("CRITICAL: BOT_TOKEN is not set.")
-        return
+    # Start Dummy Web Server for Railway Health Check
+    app_runner = web.AppRunner(web.Application())
+    await app_runner.setup()
+    await web.TCPSite(app_runner, '0.0.0.0', PORT).start()
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CallbackQueryHandler(on_callback))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
-    await app.initialize()
-    await app.start()
-    asyncio.create_task(watcher(app))
+    await bot_app.initialize()
+    await bot_app.start()
+    asyncio.create_task(watcher(bot_app))
     
-    print(f"--- MONGODB LIVE INTERFACE BOT ONLINE (PORT: {PORT}) ---")
-    await app.updater.start_polling()
+    print(f"--- BOT ONLINE (PORT: {PORT}) ---")
+    await bot_app.updater.start_polling(drop_pending_updates=True)
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        pass
+    try: asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit): pass

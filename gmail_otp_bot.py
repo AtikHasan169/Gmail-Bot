@@ -52,14 +52,14 @@ PRIVACY_POLICY_HTML = """
 <!DOCTYPE html>
 <html>
 <head><title>Privacy Policy - Gmail OTP Bot</title></head>
-<body style="font-family: sans-serif; padding: 40px; line-height: 1.6;">
+<body style="font-family: sans-serif; padding: 40px; line-height: 1.6; max-width: 800px; margin: auto;">
     <h1>Privacy Policy</h1>
     <p>This bot accesses your Gmail inbox for the sole purpose of detecting and displaying OTP codes to you in Telegram.</p>
     <h2>Data Usage</h2>
     <ul>
         <li>We only read emails marked as "unread".</li>
         <li>We extract numeric codes (5-10 digits).</li>
-        <li>Tokens are stored securely in an encrypted database.</li>
+        <li>Tokens are stored securely in our private database.</li>
     </ul>
     <h2>Security</h2>
     <p>We do not store your actual emails, only the detected codes during the active session.</p>
@@ -75,6 +75,21 @@ SUCCESS_HTML = """
     <h1 style="color: #2ecc71;">✅ Successfully Linked!</h1>
     <p>Your Gmail account is now connected.</p>
     <p>Return to Telegram to start monitoring.</p>
+    <script>setTimeout(() => { window.close(); }, 3000);</script>
+</body>
+</html>
+"""
+
+INDEX_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Gmail Bot Server</title></head>
+<body style="font-family: sans-serif; text-align: center; padding: 50px;">
+    <h1>🤖 Gmail OTP Bot Server</h1>
+    <p>This server handles OAuth redirects for the Telegram Bot.</p>
+    <p><a href="/privacy">Privacy Policy</a></p>
+    <hr>
+    <p style="color: gray;">Status: Online</p>
 </body>
 </html>
 """
@@ -134,6 +149,9 @@ async def get_ui_content(uid_str):
     return text, kb
 
 # --- WEB HANDLERS ---
+async def handle_index(request):
+    return web.Response(text=INDEX_HTML, content_type='text/html')
+
 async def handle_privacy(request):
     return web.Response(text=PRIVACY_POLICY_HTML, content_type='text/html')
 
@@ -142,10 +160,17 @@ async def handle_oauth_callback(request):
     uid_str = request.query.get("state") # This is our Telegram UID
     
     if not code:
-        return web.Response(text="Error: No authorization code received from Google.", status=400)
+        # If human visits this directly, give instructions instead of raw error
+        return web.Response(text="""
+        <html><body style="font-family:sans-serif; text-align:center; padding:50px;">
+        <h2>⚠️ Direct Access Detected</h2>
+        <p>This URL is used automatically by Google during login.</p>
+        <p>Please open your <b>Telegram Bot</b> and click the Login button there.</p>
+        </body></html>
+        """, content_type='text/html', status=200)
     
     if not uid_str:
-        return web.Response(text="Error: State parameter (UID) is missing. Try logging in again from the bot.", status=400)
+        return web.Response(text="Error: State parameter (UID) is missing. Please restart login from Telegram.", status=400)
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -183,14 +208,15 @@ async def handle_oauth_callback(request):
                 
                 # Notify User in Telegram
                 bot = request.app['bot']
-                await bot.send_message(int(uid_str), f"✅ **Linked Account:** `{email}`")
+                await bot.send_message(int(uid_str), f"✅ **Linked Account:** `{email}`\nMonitoring is now active.")
                 
                 # Refresh UI message
                 await update_live_ui(uid_str, bot)
                 
                 return web.Response(text=SUCCESS_HTML, content_type='text/html')
             else:
-                return web.Response(text=f"OAuth Error: {token_data.get('error_description', 'Token exchange failed')}", status=500)
+                desc = token_data.get('error_description', 'Token exchange failed')
+                return web.Response(text=f"OAuth Error: {desc}", status=500)
                 
     except Exception as e:
         return web.Response(text=f"Server Error: {str(e)}", status=500)
@@ -221,6 +247,7 @@ async def process_emails(uid_str, bot, session, manual=False):
     async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=p, headers=headers) as r:
         if r.status == 401:
             # Refresh Token logic
+            if not user.get("refresh"): return False
             refresh_data = {
                 "client_id": CLIENT_ID, "client_secret": SECRET,
                 "refresh_token": user["refresh"], "grant_type": "refresh_token"
@@ -322,6 +349,7 @@ async def watcher(app):
 async def main():
     webapp = web.Application()
     webapp.add_routes([
+        web.get('/', handle_index),
         web.get('/oauth/callback', handle_oauth_callback),
         web.get('/privacy', handle_privacy)
     ])

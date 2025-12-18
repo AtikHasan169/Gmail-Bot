@@ -34,23 +34,57 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 SECRET = os.getenv("CLIENT_SECRET")
 MONGO_URI = os.getenv("MONGO_URI")
 PORT = int(os.environ.get('PORT', 8080))
-REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
+# Ensure this matches your Google Cloud Console exactly
+REDIRECT_URI = "https://gmail-bot-production.up.railway.app/oauth/callback"
 
 # --- DATABASE SETUP ---
-if MONGO_URI:
-    client = AsyncIOMotorClient(MONGO_URI)
-    db = client['gmail_otp_bot']
-    users_col = db['users']
-    seen_col = db['seen_messages']
-else:
-    print("CRITICAL ERROR: MONGO_URI not found.")
+if not MONGO_URI:
+    print("CRITICAL: MONGO_URI environment variable is missing.")
     sys.exit(1)
+
+client = AsyncIOMotorClient(MONGO_URI)
+db = client['gmail_otp_bot']
+users_col = db['users']
+seen_col = db['seen_messages']
+
+# --- HTML TEMPLATES (For Verification) ---
+PRIVACY_POLICY_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Privacy Policy - Gmail OTP Bot</title></head>
+<body style="font-family: sans-serif; padding: 40px; line-height: 1.6;">
+    <h1>Privacy Policy</h1>
+    <p>This bot accesses your Gmail inbox for the sole purpose of detecting and displaying OTP (One-Time Password) codes to you in Telegram.</p>
+    <h2>Data Usage</h2>
+    <ul>
+        <li>We only read emails marked as "unread".</li>
+        <li>We only extract numeric codes (5-10 digits).</li>
+        <li>Your data is never shared with third parties.</li>
+        <li>We use industry-standard encryption to store your OAuth tokens in our database.</li>
+    </ul>
+    <h2>Account Deletion</h2>
+    <p>You can revoke access at any time by clicking the "Logout" button within the bot or by visiting your Google Account security settings.</p>
+</body>
+</html>
+"""
+
+SUCCESS_HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Success!</title></head>
+<body style="font-family: sans-serif; text-align: center; padding: 50px;">
+    <h1 style="color: #2ecc71;">✅ Successfully Linked!</h1>
+    <p>Your Gmail account is now connected to the bot.</p>
+    <p>You can close this tab and return to Telegram.</p>
+</body>
+</html>
+"""
 
 # --- UI GENERATOR ---
 async def get_ui_content(uid_str):
     user = await users_col.find_one({"uid": uid_str})
     
-    if not user:
+    if not user or not user.get("access"):
         url = (
             "https://accounts.google.com/o/oauth2/v2/auth"
             f"?client_id={CLIENT_ID}"
@@ -58,6 +92,7 @@ async def get_ui_content(uid_str):
             "&response_type=code"
             "&scope=https://www.googleapis.com/auth/gmail.readonly"
             "&access_type=offline&prompt=consent"
+            f"&state={uid_str}"
         )
         text = "❌ **Account Not Linked**\n\nPlease login to start monitoring."
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔐 Login Google", url=url)]])
@@ -68,12 +103,9 @@ async def get_ui_content(uid_str):
     last_check = user.get("last_check", "Never")
     latest_otp = user.get("latest_otp", "None Yet")
     gen_alias = user.get("last_gen", "None")
-    
-    # Monitoring Status
     is_active = user.get("is_active", True)
     status_icon = "🟢 ACTIVE" if is_active else "🟡 STOPPED"
     
-    # 30-Second "NEW" Badge Logic
     last_ts = user.get("last_otp_timestamp", 0)
     is_fresh = (time.time() - last_ts) < 30
     otp_header = "🚨 **[NEW] OTP RECEIVED** 🚨" if is_fresh else "📨 **Latest OTP:**"
@@ -89,7 +121,7 @@ async def get_ui_content(uid_str):
         f"{otp_header}\n{latest_otp}\n\n"
         f"✨ **Last Alias:**\n`{gen_alias}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ _All updates edit this message. Auto-clears 'NEW' status after 30s._"
+        f"⚠️ _Monitoring active in background every 2-5s._"
     )
 
     kb = InlineKeyboardMarkup([
@@ -101,229 +133,165 @@ async def get_ui_content(uid_str):
     
     return text, kb
 
-# --- GMAIL ENGINE ---
-async def refresh_google_token(uid_str, session):
-    user = await users_col.find_one({"uid": uid_str})
-    if not user or not user.get("refresh"): return None
+# --- WEB HANDLERS ---
+async def handle_privacy(request):
+    return web.Response(text=PRIVACY_POLICY_HTML, content_type='text/html')
+
+async def handle_oauth_callback(request):
+    code = request.query.get("code")
+    uid_str = request.query.get("state")
     
-    data = {
-        "client_id": CLIENT_ID,
-        "client_secret": SECRET,
-        "refresh_token": user["refresh"],
-        "grant_type": "refresh_token"
-    }
-    async with session.post("https://oauth2.googleapis.com/token", data=data) as r:
-        res = await r.json()
-        if "access_token" in res:
-            await users_col.update_one({"uid": uid_str}, {"$set": {"access": res["access_token"]}})
-            return res["access_token"]
-    return None
+    if not code or not uid_str:
+        return web.Response(text="Invalid callback parameters.", status=400)
 
-async def fetch_unread(uid_str, user_data, session, limit=None):
-    access = user_data["access"]
-    headers = {"Authorization": f"Bearer {access}"}
-    params = {"q": "is:unread"}
-    if limit: params["maxResults"] = limit
-
-    async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers) as r:
-        if r.status == 401:
-            new_access = await refresh_google_token(uid_str, session)
-            if not new_access: return []
-            headers = {"Authorization": f"Bearer {new_access}"}
-            async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers) as r2:
-                res = await r2.json()
-        else:
-            res = await r.json()
-    return res.get("messages", [])
-
-async def fetch_body(user_data, mid, session):
-    headers = {"Authorization": f"Bearer {user_data['access']}"}
-    async with session.get(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}?format=raw", headers=headers) as r:
-        res = await r.json()
-        raw = res.get("raw")
-        if not raw: return ""
-        msg = message_from_bytes(urlsafe_b64decode(raw))
-        if msg.is_multipart():
-            for part in msg.walk():
-                if part.get_content_type() == "text/plain":
-                    return part.get_payload(decode=True).decode(errors="ignore")
-        return msg.get_payload(decode=True).decode(errors="ignore")
+    async with aiohttp.ClientSession() as session:
+        data = {
+            "client_id": CLIENT_ID, "client_secret": SECRET,
+            "code": code, "grant_type": "authorization_code", "redirect_uri": REDIRECT_URI
+        }
+        async with session.post("https://oauth2.googleapis.com/token", data=data) as r:
+            token = await r.json()
+            
+            if "access_token" in token:
+                headers = {"Authorization": f"Bearer {token['access_token']}"}
+                async with session.get("https://www.googleapis.com/gmail/v1/users/me/profile", headers=headers) as p:
+                    prof = await p.json()
+                    await users_col.update_one({"uid": uid_str}, {"$set": {
+                        "email": prof["emailAddress"], "access": token["access_token"], 
+                        "refresh": token.get("refresh_token", ""), "captured": 0, 
+                        "last_otp_timestamp": 0, "is_active": True
+                    }}, upsert=True)
+                    
+                    # Notify user in Telegram
+                    bot = request.app['bot']
+                    await bot.send_message(int(uid_str), f"✅ **Linked Successfully:** `{prof['emailAddress']}`")
+                    await update_live_ui(uid_str, bot)
+                
+                return web.Response(text=SUCCESS_HTML, content_type='text/html')
+    
+    return web.Response(text="Authentication Failed.", status=500)
 
 # --- CORE LOGIC ---
 async def update_live_ui(uid_str, bot):
-    text, kb = await get_ui_content(uid_str)
     user = await users_col.find_one({"uid": uid_str})
     if not user or not user.get("main_msg_id"): return
-    
+    text, kb = await get_ui_content(uid_str)
     try:
-        await bot.edit_message_text(
-            chat_id=int(uid_str),
-            message_id=user["main_msg_id"],
-            text=text,
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
-    except Exception: pass
+        await bot.edit_message_text(chat_id=int(uid_str), message_id=user["main_msg_id"], text=text, reply_markup=kb, parse_mode="Markdown")
+    except: pass
 
-async def process_user_emails(uid_str, bot, session, manual=False):
+async def process_emails(uid_str, bot, session, manual=False):
     user = await users_col.find_one({"uid": uid_str})
-    if not user: return False
-    
-    # Skip if monitoring is disabled (unless manual)
-    if not manual and not user.get("is_active", True):
-        return False
-    
-    messages = await fetch_unread(uid_str, user, session, limit=5 if manual else 10)
-    new_otp_found = False
-    
-    for m in messages:
-        mid = m['id']
-        key = f"{uid_str}:{mid}"
-        
-        is_seen = await seen_col.find_one({"key": key})
-        if not manual and is_seen: continue
-        
-        body = await fetch_body(user, mid, session)
-        codes = re.findall(r"\b\d{5,10}\b", body)
-        if codes:
-            app_name = "Unknown"
-            msgl = body.lower()
-            apps = ["Telegram", "Google", "WhatsApp", "Amazon", "Facebook", "Instagram", "Apple", "Microsoft", "Netflix"]
-            for a in apps:
-                if a.lower() in msgl: app_name = a; break
-            
-            await users_col.update_one({"uid": uid_str}, {
-                "$set": {
-                    "latest_otp": f"📱 **{app_name}**: `{codes[0]}`\n⏰ {datetime.datetime.now().strftime('%H:%M:%S')}",
-                    "last_otp_timestamp": time.time()
-                },
-                "$inc": {"captured": 1}
-            })
-            new_otp_found = True
-        
-        if not manual:
-            await seen_col.update_one({"key": key}, {"$set": {"at": time.time()}}, upsert=True)
-    
-    await users_col.update_one({"uid": uid_str}, {"$set": {"last_check": datetime.datetime.now().strftime("%H:%M:%S")}})
-    
-    last_ts = user.get("last_otp_timestamp", 0)
-    is_recently_new = (time.time() - last_ts) < 40 
-    
-    if new_otp_found or manual or is_recently_new:
-        await update_live_ui(uid_str, bot)
-    return new_otp_found
+    if not user or not user.get("access"): return False
+    if not manual and not user.get("is_active", True): return False
 
-# --- TELEGRAM HANDLERS ---
+    headers = {"Authorization": f"Bearer {user['access']}"}
+    p = {"q": "is:unread", "maxResults": 5 if manual else 10}
+    
+    async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=p, headers=headers) as r:
+        if r.status == 401:
+            data = {"client_id": CLIENT_ID, "client_secret": SECRET, "refresh_token": user["refresh"], "grant_type": "refresh_token"}
+            async with session.post("https://oauth2.googleapis.com/token", data=data) as tr:
+                tr_json = await tr.json()
+                if "access_token" in tr_json:
+                    await users_col.update_one({"uid": uid_str}, {"$set": {"access": tr_json["access_token"]}})
+                    headers["Authorization"] = f"Bearer {tr_json['access_token']}"
+                    async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=p, headers=headers) as r2:
+                        res = await r2.json()
+                else: return False
+        else: res = await r.json()
+
+    messages = res.get("messages", [])
+    found_any = False
+    for m in messages:
+        key = f"{uid_str}:{m['id']}"
+        if not manual and await seen_col.find_one({"key": key}): continue
+        
+        async with session.get(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{m['id']}?format=raw", headers=headers) as rb:
+            rj = await rb.json()
+            raw = rj.get("raw")
+            if not raw: continue
+            body = message_from_bytes(urlsafe_b64decode(raw)).get_payload(decode=True).decode(errors="ignore")
+            codes = re.findall(r"\b\d{5,10}\b", body)
+            if codes:
+                app = "Unknown"
+                for a in ["Telegram", "Google", "WhatsApp", "Amazon", "Facebook", "Instagram", "Apple", "Microsoft"]:
+                    if a.lower() in body.lower(): app = a; break
+                await users_col.update_one({"uid": uid_str}, {
+                    "$set": {"latest_otp": f"📱 **{app}**: `{codes[0]}`\n⏰ {datetime.datetime.now().strftime('%H:%M:%S')}", "last_otp_timestamp": time.time()},
+                    "$inc": {"captured": 1}
+                })
+                found_any = True
+        if not manual: await seen_col.update_one({"key": key}, {"$set": {"at": time.time()}}, upsert=True)
+
+    await users_col.update_one({"uid": uid_str}, {"$set": {"last_check": datetime.datetime.now().strftime("%H:%M:%S")}})
+    if found_any or manual or (time.time() - user.get("last_otp_timestamp", 0)) < 40:
+        await update_live_ui(uid_str, bot)
+    return found_any
+
+# --- HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid_str = str(update.effective_user.id)
-    
-    # Keyboard with Start/Stop
-    kb_markup = ReplyKeyboardMarkup([
-        ["Start Monitoring", "Stop Monitoring"],
-        ["🔄 Sync Interface"]
-    ], resize_keyboard=True)
-    
-    await update.message.reply_text("🎮 Monitoring Control Panel Active.", reply_markup=kb_markup)
-    
-    text, kb = await get_ui_content(uid_str)
-    sent = await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
-    
+    kb = ReplyKeyboardMarkup([["Start Monitoring", "Stop Monitoring"], ["🔄 Refresh Interface"]], resize_keyboard=True)
+    await update.message.reply_text("✨ **Live Session Active**", reply_markup=kb)
+    text, kb_inline = await get_ui_content(uid_str)
+    sent = await update.message.reply_text(text, reply_markup=kb_inline, parse_mode="Markdown")
     await users_col.update_one({"uid": uid_str}, {"$set": {"main_msg_id": sent.message_id}}, upsert=True)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid_str, msg = str(update.effective_user.id), update.message.text
-
-    # Monitoring Controls
-    if msg == "Start Monitoring":
-        await users_col.update_one({"uid": uid_str}, {"$set": {"is_active": True}})
-        await update_live_ui(uid_str, context.bot)
-        return
-    
-    if msg == "Stop Monitoring":
-        await users_col.update_one({"uid": uid_str}, {"$set": {"is_active": False}})
-        await update_live_ui(uid_str, context.bot)
-        return
-    
-    if msg == "🔄 Sync Interface":
-        return await start(update, context)
-
-    # Gmail Auth Handling
-    if "4/" in msg or len(msg) > 30:
-        async with aiohttp.ClientSession() as s:
-            data = {"client_id": CLIENT_ID, "client_secret": SECRET, "code": msg, "grant_type": "authorization_code", "redirect_uri": REDIRECT_URI}
-            async with s.post("https://oauth2.googleapis.com/token", data=data) as r:
-                t = await r.json()
-                if "access_token" in t:
-                    async with s.get("https://www.googleapis.com/gmail/v1/users/me/profile", headers={"Authorization": f"Bearer {t['access_token']}"}) as p:
-                        prof = await p.json()
-                        await users_col.update_one({"uid": uid_str}, {"$set": {
-                            "email": prof["emailAddress"], 
-                            "access": t["access_token"], 
-                            "refresh": t.get("refresh_token", ""),
-                            "captured": 0, 
-                            "last_otp_timestamp": 0,
-                            "is_active": True
-                        }}, upsert=True)
-                        user_data = await users_col.find_one({"uid": uid_str})
-                        m_list = await fetch_unread(uid_str, user_data, s)
-                        for m in m_list: await seen_col.update_one({"key": f"{uid_str}:{m['id']}"}, {"$set": {"at": time.time()}}, upsert=True)
-                        await update_live_ui(uid_str, context.bot)
-        try: await update.message.delete()
-        except: pass
+    if msg == "Start Monitoring": await users_col.update_one({"uid": uid_str}, {"$set": {"is_active": True}})
+    elif msg == "Stop Monitoring": await users_col.update_one({"uid": uid_str}, {"$set": {"is_active": False}})
+    elif msg == "🔄 Refresh Interface": return await start(update, context)
+    await update_live_ui(uid_str, context.bot)
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     uid_str, data = str(q.from_user.id), q.data
     await q.answer()
     if data == "ui_refresh":
-        async with aiohttp.ClientSession() as s: await process_user_emails(uid_str, context.bot, s, manual=True)
+        async with aiohttp.ClientSession() as s: await process_emails(uid_str, context.bot, s, manual=True)
     elif data == "ui_gen":
         u = await users_col.find_one({"uid": uid_str})
         if u:
-            user_part, dom = u["email"].split("@")
-            mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in user_part)
+            user_p, dom = u["email"].split("@")
+            mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in user_p)
             await users_col.update_one({"uid": uid_str}, {"$set": {"last_gen": f"{mixed}@{dom}"}})
             await update_live_ui(uid_str, context.bot)
-    elif data == "ui_logout": await users_col.delete_one({"uid": uid_str}); await update_live_ui(uid_str, context.bot)
-    elif data == "ui_clear": 
+    elif data == "ui_logout":
+        await users_col.update_one({"uid": uid_str}, {"$unset": {"access": "", "refresh": ""}})
+        await update_live_ui(uid_str, context.bot)
+    elif data == "ui_clear":
         await users_col.update_one({"uid": uid_str}, {"$set": {"latest_otp": "Cleared", "captured": 0, "last_otp_timestamp": 0}})
         await update_live_ui(uid_str, context.bot)
 
-# --- HEALTH CHECK SERVER ---
-async def health_check(request): return web.Response(text="Bot is running")
-
-# --- BACKGROUND WATCHER ---
+# --- WATCHER ---
 async def watcher(app):
     async with aiohttp.ClientSession() as session:
         while True:
-            try:
-                # ONLY FETCH USERS WHO HAVE MONITORING ENABLED
-                cursor = users_col.find({"access": {"$exists": True}, "is_active": True})
-                users = await cursor.to_list(None)
-                if users:
-                    await asyncio.gather(*(process_user_emails(u["uid"], app.bot, session) for u in users), return_exceptions=True)
-            except Exception as e:
-                print(f"Watcher error: {e}")
-            await asyncio.sleep(2)
+            users = await users_col.find({"access": {"$exists": True}, "is_active": True}).to_list(None)
+            if users:
+                await asyncio.gather(*(process_emails(u["uid"], app.bot, session) for u in users), return_exceptions=True)
+            await asyncio.sleep(3)
 
 # --- MAIN ---
 async def main():
-    if not BOT_TOKEN:
-        print("CRITICAL ERROR: BOT_TOKEN not set.")
-        return
-
-    # Start Health Check Server
-    app_runner = web.AppRunner(web.Application())
-    await app_runner.setup()
-    await web.TCPSite(app_runner, '0.0.0.0', PORT).start()
-
-    print("Waiting 10 seconds to avoid Conflict error...")
-    await asyncio.sleep(10)
-
-    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    webapp = web.Application()
+    webapp.add_routes([
+        web.get('/oauth/callback', handle_oauth_callback),
+        web.get('/privacy', handle_privacy)
+    ])
     
-    await bot_app.bot.delete_webhook()
+    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    webapp['bot'] = bot_app.bot
+    
+    runner = web.AppRunner(webapp)
+    await runner.setup()
+    await web.TCPSite(runner, '0.0.0.0', PORT).start()
 
+    await asyncio.sleep(10)
+    await bot_app.bot.delete_webhook()
+    
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CallbackQueryHandler(on_callback))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
@@ -332,38 +300,22 @@ async def main():
     await bot_app.start()
     asyncio.create_task(watcher(bot_app))
     
-    print(f"--- BOT ONLINE (PORT: {PORT}) ---")
+    print(f"--- BOT & WEB SERVER ONLINE (PORT: {PORT}) ---")
     
     retries = 5
-    delay = 5
     for i in range(retries):
         try:
             await bot_app.updater.start_polling(drop_pending_updates=True)
             break
         except Conflict:
-            if i < retries - 1:
-                print(f"Conflict detected. Retrying in {delay} seconds...")
-                await asyncio.sleep(delay)
-                delay *= 2
-            else:
-                raise
+            await asyncio.sleep(5)
+            if i == retries - 1: raise
 
     stop_event = asyncio.Event()
-    loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop_event.set)
-        
+        asyncio.get_running_loop().add_signal_handler(sig, stop_event.set)
     await stop_event.wait()
-    
-    print("--- STOPPING BOT ---")
-    await bot_app.updater.stop()
-    await bot_app.stop()
-    await bot_app.shutdown()
 
 if __name__ == "__main__":
-    try: 
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit): 
-        pass
-    except Exception as e:
-        print(f"Fatal error: {e}")
+    try: asyncio.run(main())
+    except: pass

@@ -34,7 +34,7 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 SECRET = os.getenv("CLIENT_SECRET")
 MONGO_URI = os.getenv("MONGO_URI")
 PORT = int(os.environ.get('PORT', 8080))
-# Ensure this matches your Google Cloud Console exactly
+# IMPORTANT: This must match your Google Console exactly
 REDIRECT_URI = "https://gmail-bot-production.up.railway.app/oauth/callback"
 
 # --- DATABASE SETUP ---
@@ -47,23 +47,22 @@ db = client['gmail_otp_bot']
 users_col = db['users']
 seen_col = db['seen_messages']
 
-# --- HTML TEMPLATES (For Verification) ---
+# --- HTML TEMPLATES ---
 PRIVACY_POLICY_HTML = """
 <!DOCTYPE html>
 <html>
 <head><title>Privacy Policy - Gmail OTP Bot</title></head>
 <body style="font-family: sans-serif; padding: 40px; line-height: 1.6;">
     <h1>Privacy Policy</h1>
-    <p>This bot accesses your Gmail inbox for the sole purpose of detecting and displaying OTP (One-Time Password) codes to you in Telegram.</p>
+    <p>This bot accesses your Gmail inbox for the sole purpose of detecting and displaying OTP codes to you in Telegram.</p>
     <h2>Data Usage</h2>
     <ul>
         <li>We only read emails marked as "unread".</li>
-        <li>We only extract numeric codes (5-10 digits).</li>
-        <li>Your data is never shared with third parties.</li>
-        <li>We use industry-standard encryption to store your OAuth tokens in our database.</li>
+        <li>We extract numeric codes (5-10 digits).</li>
+        <li>Tokens are stored securely in an encrypted database.</li>
     </ul>
-    <h2>Account Deletion</h2>
-    <p>You can revoke access at any time by clicking the "Logout" button within the bot or by visiting your Google Account security settings.</p>
+    <h2>Security</h2>
+    <p>We do not store your actual emails, only the detected codes during the active session.</p>
 </body>
 </html>
 """
@@ -74,8 +73,8 @@ SUCCESS_HTML = """
 <head><title>Success!</title></head>
 <body style="font-family: sans-serif; text-align: center; padding: 50px;">
     <h1 style="color: #2ecc71;">✅ Successfully Linked!</h1>
-    <p>Your Gmail account is now connected to the bot.</p>
-    <p>You can close this tab and return to Telegram.</p>
+    <p>Your Gmail account is now connected.</p>
+    <p>Return to Telegram to start monitoring.</p>
 </body>
 </html>
 """
@@ -85,6 +84,7 @@ async def get_ui_content(uid_str):
     user = await users_col.find_one({"uid": uid_str})
     
     if not user or not user.get("access"):
+        # We pass the Telegram UID in the 'state' parameter
         url = (
             "https://accounts.google.com/o/oauth2/v2/auth"
             f"?client_id={CLIENT_ID}"
@@ -94,7 +94,7 @@ async def get_ui_content(uid_str):
             "&access_type=offline&prompt=consent"
             f"&state={uid_str}"
         )
-        text = "❌ **Account Not Linked**\n\nPlease login to start monitoring."
+        text = "❌ **Account Not Linked**\n\nPlease login using the button below to start monitoring."
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔐 Login Google", url=url)]])
         return text, kb
 
@@ -121,7 +121,7 @@ async def get_ui_content(uid_str):
         f"{otp_header}\n{latest_otp}\n\n"
         f"✨ **Last Alias:**\n`{gen_alias}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ _Monitoring active in background every 2-5s._"
+        f"⚠️ _All updates edit this message. Session active._"
     )
 
     kb = InlineKeyboardMarkup([
@@ -139,37 +139,61 @@ async def handle_privacy(request):
 
 async def handle_oauth_callback(request):
     code = request.query.get("code")
-    uid_str = request.query.get("state")
+    uid_str = request.query.get("state") # This is our Telegram UID
     
-    if not code or not uid_str:
-        return web.Response(text="Invalid callback parameters.", status=400)
+    if not code:
+        return web.Response(text="Error: No authorization code received from Google.", status=400)
+    
+    if not uid_str:
+        return web.Response(text="Error: State parameter (UID) is missing. Try logging in again from the bot.", status=400)
 
-    async with aiohttp.ClientSession() as session:
-        data = {
-            "client_id": CLIENT_ID, "client_secret": SECRET,
-            "code": code, "grant_type": "authorization_code", "redirect_uri": REDIRECT_URI
-        }
-        async with session.post("https://oauth2.googleapis.com/token", data=data) as r:
-            token = await r.json()
-            
-            if "access_token" in token:
-                headers = {"Authorization": f"Bearer {token['access_token']}"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Exchange code for token
+            token_url = "https://oauth2.googleapis.com/token"
+            data = {
+                "client_id": CLIENT_ID,
+                "client_secret": SECRET,
+                "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": REDIRECT_URI
+            }
+            async with session.post(token_url, data=data) as r:
+                token_data = await r.json()
+                
+            if "access_token" in token_data:
+                access_token = token_data["access_token"]
+                refresh_token = token_data.get("refresh_token")
+                
+                # Fetch Email
+                headers = {"Authorization": f"Bearer {access_token}"}
                 async with session.get("https://www.googleapis.com/gmail/v1/users/me/profile", headers=headers) as p:
-                    prof = await p.json()
-                    await users_col.update_one({"uid": uid_str}, {"$set": {
-                        "email": prof["emailAddress"], "access": token["access_token"], 
-                        "refresh": token.get("refresh_token", ""), "captured": 0, 
-                        "last_otp_timestamp": 0, "is_active": True
-                    }}, upsert=True)
-                    
-                    # Notify user in Telegram
-                    bot = request.app['bot']
-                    await bot.send_message(int(uid_str), f"✅ **Linked Successfully:** `{prof['emailAddress']}`")
-                    await update_live_ui(uid_str, bot)
+                    profile = await p.json()
+                    email = profile["emailAddress"]
+
+                # Update DB
+                await users_col.update_one({"uid": uid_str}, {"$set": {
+                    "email": email,
+                    "access": access_token,
+                    "refresh": refresh_token,
+                    "is_active": True,
+                    "captured": 0,
+                    "last_otp_timestamp": 0
+                }}, upsert=True)
+                
+                # Notify User in Telegram
+                bot = request.app['bot']
+                await bot.send_message(int(uid_str), f"✅ **Linked Account:** `{email}`")
+                
+                # Refresh UI message
+                await update_live_ui(uid_str, bot)
                 
                 return web.Response(text=SUCCESS_HTML, content_type='text/html')
-    
-    return web.Response(text="Authentication Failed.", status=500)
+            else:
+                return web.Response(text=f"OAuth Error: {token_data.get('error_description', 'Token exchange failed')}", status=500)
+                
+    except Exception as e:
+        return web.Response(text=f"Server Error: {str(e)}", status=500)
 
 # --- CORE LOGIC ---
 async def update_live_ui(uid_str, bot):
@@ -177,8 +201,14 @@ async def update_live_ui(uid_str, bot):
     if not user or not user.get("main_msg_id"): return
     text, kb = await get_ui_content(uid_str)
     try:
-        await bot.edit_message_text(chat_id=int(uid_str), message_id=user["main_msg_id"], text=text, reply_markup=kb, parse_mode="Markdown")
-    except: pass
+        await bot.edit_message_text(
+            chat_id=int(uid_str),
+            message_id=user["main_msg_id"],
+            text=text,
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+    except Exception: pass
 
 async def process_emails(uid_str, bot, session, manual=False):
     user = await users_col.find_one({"uid": uid_str})
@@ -186,16 +216,21 @@ async def process_emails(uid_str, bot, session, manual=False):
     if not manual and not user.get("is_active", True): return False
 
     headers = {"Authorization": f"Bearer {user['access']}"}
-    p = {"q": "is:unread", "maxResults": 5 if manual else 10}
+    p = {"q": "is:unread", "maxResults": 10}
     
     async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=p, headers=headers) as r:
         if r.status == 401:
-            data = {"client_id": CLIENT_ID, "client_secret": SECRET, "refresh_token": user["refresh"], "grant_type": "refresh_token"}
-            async with session.post("https://oauth2.googleapis.com/token", data=data) as tr:
+            # Refresh Token logic
+            refresh_data = {
+                "client_id": CLIENT_ID, "client_secret": SECRET,
+                "refresh_token": user["refresh"], "grant_type": "refresh_token"
+            }
+            async with session.post("https://oauth2.googleapis.com/token", data=refresh_data) as tr:
                 tr_json = await tr.json()
                 if "access_token" in tr_json:
-                    await users_col.update_one({"uid": uid_str}, {"$set": {"access": tr_json["access_token"]}})
-                    headers["Authorization"] = f"Bearer {tr_json['access_token']}"
+                    new_at = tr_json["access_token"]
+                    await users_col.update_one({"uid": uid_str}, {"$set": {"access": new_at}})
+                    headers["Authorization"] = f"Bearer {new_at}"
                     async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=p, headers=headers) as r2:
                         res = await r2.json()
                 else: return False
@@ -215,16 +250,22 @@ async def process_emails(uid_str, bot, session, manual=False):
             codes = re.findall(r"\b\d{5,10}\b", body)
             if codes:
                 app = "Unknown"
+                lower_body = body.lower()
                 for a in ["Telegram", "Google", "WhatsApp", "Amazon", "Facebook", "Instagram", "Apple", "Microsoft"]:
-                    if a.lower() in body.lower(): app = a; break
+                    if a.lower() in lower_body: app = a; break
+                
                 await users_col.update_one({"uid": uid_str}, {
-                    "$set": {"latest_otp": f"📱 **{app}**: `{codes[0]}`\n⏰ {datetime.datetime.now().strftime('%H:%M:%S')}", "last_otp_timestamp": time.time()},
+                    "$set": {
+                        "latest_otp": f"📱 **{app}**: `{codes[0]}`\n⏰ {datetime.datetime.now().strftime('%H:%M:%S')}",
+                        "last_otp_timestamp": time.time()
+                    },
                     "$inc": {"captured": 1}
                 })
                 found_any = True
         if not manual: await seen_col.update_one({"key": key}, {"$set": {"at": time.time()}}, upsert=True)
 
     await users_col.update_one({"uid": uid_str}, {"$set": {"last_check": datetime.datetime.now().strftime("%H:%M:%S")}})
+    
     if found_any or manual or (time.time() - user.get("last_otp_timestamp", 0)) < 40:
         await update_live_ui(uid_str, bot)
     return found_any
@@ -234,6 +275,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid_str = str(update.effective_user.id)
     kb = ReplyKeyboardMarkup([["Start Monitoring", "Stop Monitoring"], ["🔄 Refresh Interface"]], resize_keyboard=True)
     await update.message.reply_text("✨ **Live Session Active**", reply_markup=kb)
+    
     text, kb_inline = await get_ui_content(uid_str)
     sent = await update.message.reply_text(text, reply_markup=kb_inline, parse_mode="Markdown")
     await users_col.update_one({"uid": uid_str}, {"$set": {"main_msg_id": sent.message_id}}, upsert=True)
@@ -269,10 +311,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def watcher(app):
     async with aiohttp.ClientSession() as session:
         while True:
-            users = await users_col.find({"access": {"$exists": True}, "is_active": True}).to_list(None)
-            if users:
-                await asyncio.gather(*(process_emails(u["uid"], app.bot, session) for u in users), return_exceptions=True)
-            await asyncio.sleep(3)
+            try:
+                users = await users_col.find({"access": {"$exists": True}, "is_active": True}).to_list(None)
+                if users:
+                    await asyncio.gather(*(process_emails(u["uid"], app.bot, session) for u in users), return_exceptions=True)
+            except Exception: pass
+            await asyncio.sleep(4)
 
 # --- MAIN ---
 async def main():
@@ -283,13 +327,13 @@ async def main():
     ])
     
     bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
-    webapp['bot'] = bot_app.bot
+    webapp['bot'] = bot_app.bot # Attach bot to webapp for callback notifications
     
     runner = web.AppRunner(webapp)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', PORT).start()
 
-    await asyncio.sleep(10)
+    await asyncio.sleep(10) # Railway cooldown
     await bot_app.bot.delete_webhook()
     
     bot_app.add_handler(CommandHandler("start", start))
@@ -302,14 +346,13 @@ async def main():
     
     print(f"--- BOT & WEB SERVER ONLINE (PORT: {PORT}) ---")
     
-    retries = 5
-    for i in range(retries):
-        try:
-            await bot_app.updater.start_polling(drop_pending_updates=True)
-            break
-        except Conflict:
-            await asyncio.sleep(5)
-            if i == retries - 1: raise
+    # Simple conflict handling
+    try:
+        await bot_app.updater.start_polling(drop_pending_updates=True)
+    except Conflict:
+        print("Conflict detected, retrying...")
+        await asyncio.sleep(5)
+        await bot_app.updater.start_polling(drop_pending_updates=True)
 
     stop_event = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):

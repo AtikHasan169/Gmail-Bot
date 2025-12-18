@@ -73,10 +73,15 @@ async def get_ui_content(uid_str):
     is_active = user.get("is_active", True)
     status_icon = "🟢 ACTIVE" if is_active else "🟡 STOPPED"
     
-    # 30-Second "NEW" Badge Logic
+    # 30-Second "NEW" Badge Logic for OTP
     last_ts = user.get("last_otp_timestamp", 0)
     is_fresh = (time.time() - last_ts) < 30
     otp_header = "🚨 **[NEW] OTP RECEIVED** 🚨" if is_fresh else "📨 **Latest OTP:**"
+
+    # 30-Second "NEW" Badge Logic for Alias
+    last_gen_ts = user.get("last_gen_timestamp", 0)
+    is_alias_fresh = (time.time() - last_gen_ts) < 30
+    alias_header = "✨ **[NEW] GENERATED ALIAS**" if is_alias_fresh else "✨ **Last Alias:**"
 
     text = (
         f"🚀 **LIVE SESSION INTERFACE**\n"
@@ -87,7 +92,7 @@ async def get_ui_content(uid_str):
         f"🕒 **Last Scan:** `{last_check}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"{otp_header}\n{latest_otp}\n\n"
-        f"✨ **Last Alias:**\n`{gen_alias}`\n"
+        f"{alias_header}\n`{gen_alias}`\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ _All updates edit this message. Auto-clears 'NEW' status after 30s._"
     )
@@ -206,10 +211,14 @@ async def process_user_emails(uid_str, bot, session, manual=False):
     
     await users_col.update_one({"uid": uid_str}, {"$set": {"last_check": datetime.datetime.now().strftime("%H:%M:%S")}})
     
+    # Check for recent activity (OTP or Alias Gen) to refresh UI and clear badges
     last_ts = user.get("last_otp_timestamp", 0)
-    is_recently_new = (time.time() - last_ts) < 40 
+    last_gen_ts = user.get("last_gen_timestamp", 0)
     
-    if new_otp_found or manual or is_recently_new:
+    is_otp_recently_new = (time.time() - last_ts) < 40 
+    is_alias_recently_new = (time.time() - last_gen_ts) < 40
+    
+    if new_otp_found or manual or is_otp_recently_new or is_alias_recently_new:
         await update_live_ui(uid_str, bot)
     return new_otp_found
 
@@ -262,6 +271,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             "refresh": t.get("refresh_token", ""),
                             "captured": 0, 
                             "last_otp_timestamp": 0,
+                            "last_gen_timestamp": 0,
                             "is_active": True
                         }}, upsert=True)
                         user_data = await users_col.find_one({"uid": uid_str})
@@ -282,11 +292,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if u:
             user_part, dom = u["email"].split("@")
             mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in user_part)
-            await users_col.update_one({"uid": uid_str}, {"$set": {"last_gen": f"{mixed}@{dom}"}})
+            await users_col.update_one({"uid": uid_str}, {"$set": {
+                "last_gen": f"{mixed}@{dom}",
+                "last_gen_timestamp": time.time()
+            }})
             await update_live_ui(uid_str, context.bot)
     elif data == "ui_logout": await users_col.delete_one({"uid": uid_str}); await update_live_ui(uid_str, context.bot)
     elif data == "ui_clear": 
-        await users_col.update_one({"uid": uid_str}, {"$set": {"latest_otp": "Cleared", "captured": 0, "last_otp_timestamp": 0}})
+        await users_col.update_one({"uid": uid_str}, {"$set": {"latest_otp": "Cleared", "captured": 0, "last_otp_timestamp": 0, "last_gen_timestamp": 0}})
         await update_live_ui(uid_str, context.bot)
 
 # --- HEALTH CHECK SERVER ---

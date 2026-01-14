@@ -4,10 +4,9 @@ from database import get_user
 from auth import get_flow
 
 def get_main_menu():
+    # --- CHANGED: Removed "Start". Only Refresh and Status remain. ---
     return ReplyKeyboardMarkup(keyboard=[
-        # --- CHANGED: Added "Start" back. It now sits next to Refresh ---
-        [KeyboardButton(text="▶ Start"), KeyboardButton(text="↻ Refresh")],
-        [KeyboardButton(text="ℹ Status")]
+        [KeyboardButton(text="↻ Refresh"), KeyboardButton(text="ℹ Status")]
     ], resize_keyboard=True)
 
 async def get_dashboard_ui(uid_str: str):
@@ -46,7 +45,7 @@ async def get_dashboard_ui(uid_str: str):
         gen_ts = user.get("last_gen_timestamp", 0)
         
         if otp_ts < gen_ts:
-            label = f"🚨 Last OTP: {raw_otp}"
+            label = f"🚨 Last: {raw_otp}"
         else:
             label = f"{raw_otp}"
             

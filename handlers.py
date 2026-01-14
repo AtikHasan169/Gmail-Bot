@@ -51,9 +51,7 @@ async def cmd_start(message: Message):
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
 
-@router.message(F.text == "▶ Start")
-async def btn_start(message: Message):
-    await cmd_start(message)
+# --- REMOVED: btn_start handler ---
 
 @router.message(F.text.regexp(r"(?i)code=4/|4/"))
 async def handle_code(message: Message, bot: Bot):
@@ -138,7 +136,6 @@ async def callbacks(q: CallbackQuery, bot: Bot):
             u, d = user["email"].split("@")
             mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in u)
             
-            # --- CHANGED: AM/PM Format ---
             formatted_status = (
                 f"✨ <b>New Mail Generated</b>\n"
                 f"⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}"

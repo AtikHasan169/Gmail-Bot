@@ -9,7 +9,8 @@ from config import CLIENT_ID, CLIENT_SECRET
 from database import users, seen_msgs, update_user, get_user
 from keyboards import get_dashboard_ui
 
-TIMEOUT = aiohttp.ClientTimeout(total=5)
+# --- CHANGED: Faster Timeout (3s) ---
+TIMEOUT = aiohttp.ClientTimeout(total=3)
 BD_TZ = datetime.timezone(datetime.timedelta(hours=6))
 
 async def refresh_google_token(uid, session):
@@ -59,12 +60,8 @@ async def process_user(bot, uid, session, manual=False):
     new_ids = []
     
     try:
-        # --- OPTIMIZATION 1: Use basic polling mostly, it's faster for OTPs ---
-        # We skip the complex History ID check for manual refreshes to be snappy.
-        
-        # --- OPTIMIZATION 2: search 'newer_than:1d' to ignore old junk ---
-        # --- OPTIMIZATION 3: maxResults=3 is enough for the latest OTP ---
-        params = {"q": "is:unread newer_than:1d", "maxResults": 3}
+        # --- CHANGED: maxResults=1 (Speed boost) ---
+        params = {"q": "is:unread newer_than:1d", "maxResults": 1}
         
         async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers, timeout=TIMEOUT) as r:
                 if r.status == 401:
@@ -76,14 +73,16 @@ async def process_user(bot, uid, session, manual=False):
                 
                 if "messages" in res:
                     new_ids = [m['id'] for m in res["messages"]]
-                    # --- REMOVED: Profile/HistoryID call. It wasted time. ---
 
     except: pass
 
     if not new_ids:
+        # If manual, we MUST return to UI, but handlers.py 'finally' block handles it too. 
+        # We keep this just to set the 'last_check' time correctly.
         if manual: 
             await update_user(uid, {"last_check": datetime.datetime.now(BD_TZ).strftime("%I:%M:%S %p")})
-            await update_live_ui(bot, uid)
+            # We don't necessarily need to call update_live_ui here since handlers.py does it, 
+            # but it doesn't hurt.
         return
 
     to_fetch = [mid for mid in new_ids if not await seen_msgs.find_one({"key": f"{uid}:{mid}"})]
@@ -115,7 +114,9 @@ async def process_user(bot, uid, session, manual=False):
         if not manual: await seen_msgs.update_one({"key": f"{uid}:{mid}"}, {"$set": {"at": time.time()}}, upsert=True)
 
     await update_user(uid, {"last_check": datetime.datetime.now(BD_TZ).strftime("%I:%M:%S %p")})
-    if new_otp or manual: await update_live_ui(bot, uid)
+    
+    # handlers.py calls this too, but we need it here for background auto-checks
+    if new_otp: await update_live_ui(bot, uid)
 
 async def background_watcher(bot):
     async with aiohttp.ClientSession() as session:

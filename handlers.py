@@ -112,11 +112,10 @@ async def btn_refresh(message: Message, bot: Bot):
     uid = str(message.from_user.id)
     if not await check_login(bot, uid, message): return
     
-    # 1. Delete the "Refresh" command message
     try: await message.delete()
     except: pass
 
-    # 2. Change the DASHBOARD message to "Syncing..."
+    # Change to Syncing
     user = await get_user(uid)
     if user and user.get("main_msg_id"):
         try:
@@ -128,9 +127,15 @@ async def btn_refresh(message: Message, bot: Bot):
             )
         except: pass
 
-    # 3. Process the update (this will naturally edit the message BACK to the dashboard when done)
-    async with aiohttp.ClientSession() as s: 
-        await process_user(bot, uid, s, manual=True)
+    # --- CHANGED: Added Safety Net (try/finally) ---
+    try:
+        async with aiohttp.ClientSession() as s: 
+            await process_user(bot, uid, s, manual=True)
+    except: 
+        pass
+    finally:
+        # This GUARANTEES the dashboard returns, even if internet fails
+        await update_live_ui(bot, uid)
 
 @router.callback_query(F.data.startswith("ui_"))
 async def callbacks(q: CallbackQuery, bot: Bot):
@@ -146,8 +151,6 @@ async def callbacks(q: CallbackQuery, bot: Bot):
             await q.answer()
             return
     
-    # NOTE: ui_refresh removed from here as the button was removed from keyboards.py
-        
     if action == "ui_gen":
         await q.answer()
         user = await get_user(uid)

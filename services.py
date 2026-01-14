@@ -9,31 +9,37 @@ from config import CLIENT_ID, CLIENT_SECRET
 from database import users, seen_msgs, update_user, get_user
 from keyboards import get_dashboard_ui
 
+TIMEOUT = aiohttp.ClientTimeout(total=5)
+
 async def refresh_google_token(uid, session):
     user = await get_user(uid)
     if not user or not user.get("refresh"): return None
     data = {"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "refresh_token": user["refresh"], "grant_type": "refresh_token"}
-    async with session.post("https://oauth2.googleapis.com/token", data=data) as r:
-        res = await r.json()
-        if "access_token" in res:
-            await update_user(uid, {"access": res["access_token"]})
-            return res["access_token"]
+    try:
+        async with session.post("https://oauth2.googleapis.com/token", data=data, timeout=TIMEOUT) as r:
+            res = await r.json()
+            if "access_token" in res:
+                await update_user(uid, {"access": res["access_token"]})
+                return res["access_token"]
+    except: pass
     return None
 
 async def fetch_body_task(access, mid, session):
     headers = {"Authorization": f"Bearer {access}"}
-    async with session.get(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}?format=raw", headers=headers) as r:
-        if r.status != 200: return None
-        res = await r.json()
-        raw = res.get("raw")
-        if not raw: return None
-        try:
-            msg = message_from_bytes(urlsafe_b64decode(raw))
-            if msg.is_multipart():
-                for part in msg.walk():
-                    if part.get_content_type() == "text/plain": return part.get_payload(decode=True).decode(errors="ignore")
-            return msg.get_payload(decode=True).decode(errors="ignore")
-        except: return None
+    try:
+        async with session.get(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}?format=raw", headers=headers, timeout=TIMEOUT) as r:
+            if r.status != 200: return None
+            res = await r.json()
+            raw = res.get("raw")
+            if not raw: return None
+            try:
+                msg = message_from_bytes(urlsafe_b64decode(raw))
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        if part.get_content_type() == "text/plain": return part.get_payload(decode=True).decode(errors="ignore")
+                return msg.get_payload(decode=True).decode(errors="ignore")
+            except: return None
+    except: return None
 
 async def update_live_ui(bot, uid):
     text, kb = await get_dashboard_ui(uid)
@@ -51,29 +57,31 @@ async def process_user(bot, uid, session, manual=False):
     headers = {"Authorization": f"Bearer {access}"}
     new_ids = []
     
-    if manual or not user.get("history_id"):
-        params = {"q": "is:unread", "maxResults": 5}
-        async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers) as r:
-             if r.status == 401:
-                 access = await refresh_google_token(uid, session)
-                 if not access: return
-                 headers["Authorization"] = f"Bearer {access}"
-                 async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers) as r2: res = await r2.json()
-             else: res = await r.json()
-             if "messages" in res:
-                 new_ids = [m['id'] for m in res["messages"]]
-                 async with session.get("https://www.googleapis.com/gmail/v1/users/me/profile", headers=headers) as p:
-                     prof = await p.json()
-                     if "historyId" in prof: await update_user(uid, {"history_id": prof["historyId"]})
-    else:
-        params = {"startHistoryId": user.get("history_id"), "historyTypes": "messageAdded"}
-        async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/history", params=params, headers=headers) as r:
-            res = await r.json() if r.status == 200 else {}
-            if "historyId" in res: await update_user(uid, {"history_id": res["historyId"]})
-            if "history" in res:
-                for h in res["history"]:
-                    if "messagesAdded" in h:
-                        for m in h["messagesAdded"]: new_ids.append(m["message"]["id"])
+    try:
+        if manual or not user.get("history_id"):
+            params = {"q": "is:unread", "maxResults": 5}
+            async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers, timeout=TIMEOUT) as r:
+                 if r.status == 401:
+                     access = await refresh_google_token(uid, session)
+                     if not access: return
+                     headers["Authorization"] = f"Bearer {access}"
+                     async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers, timeout=TIMEOUT) as r2: res = await r2.json()
+                 else: res = await r.json()
+                 if "messages" in res:
+                     new_ids = [m['id'] for m in res["messages"]]
+                     async with session.get("https://www.googleapis.com/gmail/v1/users/me/profile", headers=headers, timeout=TIMEOUT) as p:
+                         prof = await p.json()
+                         if "historyId" in prof: await update_user(uid, {"history_id": prof["historyId"]})
+        else:
+            params = {"startHistoryId": user.get("history_id"), "historyTypes": "messageAdded"}
+            async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/history", params=params, headers=headers, timeout=TIMEOUT) as r:
+                res = await r.json() if r.status == 200 else {}
+                if "historyId" in res: await update_user(uid, {"history_id": res["historyId"]})
+                if "history" in res:
+                    for h in res["history"]:
+                        if "messagesAdded" in h:
+                            for m in h["messagesAdded"]: new_ids.append(m["message"]["id"])
+    except: pass
 
     if not new_ids:
         if manual: 
@@ -93,18 +101,13 @@ async def process_user(bot, uid, session, manual=False):
         codes = re.findall(r"\b\d{5,8}\b", body)
         if codes:
             otp_code = codes[0]
-            app_name = "Service"
-            lower = body.lower()
-            for app in ["telegram", "google", "whatsapp", "facebook", "instagram", "discord", "twitter", "amazon", "tiktok"]:
-                if app in lower: app_name = app.capitalize(); break
             
-            # --- MINIMAL DASHBOARD TEXT (Just Service & Time) ---
+            # --- UPDATED TEXT: New OTP Received ---
             formatted = (
-                f"📨 <b>{app_name}</b>\n"
+                f"✨ <b>New OTP Received</b>\n"
                 f"⏰ {datetime.datetime.now().strftime('%H:%M:%S')}"
             )
             
-            # Update DB (Raw OTP goes to button)
             await update_user(uid, {
                 "latest_otp": formatted, 
                 "last_otp_raw": otp_code,

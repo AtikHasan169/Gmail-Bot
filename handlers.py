@@ -1,5 +1,6 @@
 import random
 import time
+import datetime
 import aiohttp
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
@@ -16,9 +17,16 @@ async def refresh_and_repost(bot: Bot, uid: str):
     if user and user.get("main_msg_id"):
         try: await bot.delete_message(chat_id=uid, message_id=user["main_msg_id"])
         except: pass
+    
     sent = await bot.send_message(uid, "🔄 <b>Syncing...</b>", parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
-    async with aiohttp.ClientSession() as s: await process_user(bot, uid, s, manual=True)
+    
+    try:
+        async with aiohttp.ClientSession() as s: 
+            await process_user(bot, uid, s, manual=True)
+    except: pass
+    finally:
+        await update_live_ui(bot, uid)
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
@@ -37,37 +45,44 @@ async def handle_code(message: Message, bot: Bot):
         flow = get_flow(state=uid)
         flow.fetch_token(code=code)
         creds = flow.credentials
+        
         async with aiohttp.ClientSession() as s:
             headers = {"Authorization": f"Bearer {creds.token}"}
-            async with s.get("https://www.googleapis.com/gmail/v1/users/me/profile", headers=headers) as p:
-                profile = await p.json()
+            async with s.get("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", headers=headers) as r:
+                profile = await r.json()
                 await update_user(uid, {
-                    "email": profile.get("emailAddress"), "access": creds.token, "refresh": creds.refresh_token,
-                    "captured": 0, "is_active": True, "history_id": None
+                    "email": profile.get("email"), 
+                    "name": profile.get("name", "User"),
+                    "access": creds.token, 
+                    "refresh": creds.refresh_token,
+                    "captured": 0, 
+                    "is_active": True, 
+                    "history_id": None
                 })
-        await status.edit_text("✅ <b>Login Successful!</b>")
+        
+        await status.edit_text(f"✅ <b>Welcome, {profile.get('name')}!</b>")
         await refresh_and_repost(bot, uid)
         try: await message.delete()
         except: pass
     except Exception as e: await status.edit_text(f"❌ <b>Error:</b> {str(e)}")
 
-# --- STATUS BUTTON (FIXED) ---
 @router.message(F.text == "ℹ Status")
 async def btn_status(message: Message):
     uid = str(message.from_user.id)
     user = await get_user(uid)
-    
     if not user or not user.get("email"):
         await message.answer("❌ <b>Not Logged In</b>", parse_mode="HTML")
         return
-        
+    
+    name = user.get("name", "Unknown")
     email = user.get("email")
     hits = user.get("captured", 0)
     
     report = (
         f"📊 <b>ACCOUNT STATS</b>\n"
         f"────────────────\n"
-        f"📧 <code>{email}</code>\n"
+        f"👤 <b>Name:</b> {name}\n"
+        f"📧 <b>Email:</b> <code>{email}</code>\n"
         f"🎯 <b>Hits:</b> {hits}\n"
         f"────────────────"
     )
@@ -97,16 +112,30 @@ async def callbacks(q: CallbackQuery, bot: Bot):
     
     if action == "ui_refresh":
         async with aiohttp.ClientSession() as s: await process_user(bot, uid, s, manual=True)
+        
     elif action == "ui_gen":
         user = await get_user(uid)
         if user and "email" in user:
             u, d = user["email"].split("@")
             mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in u)
-            await update_user(uid, {"last_gen": f"{mixed}@{d}", "last_gen_timestamp": time.time()})
+            
+            # --- UPDATED TEXT: New Mail Generated ---
+            formatted_status = (
+                f"✨ <b>New Mail Generated</b>\n"
+                f"⏰ {datetime.datetime.now().strftime('%H:%M:%S')}"
+            )
+            
+            await update_user(uid, {
+                "last_gen": f"{mixed}@{d}", 
+                "latest_otp": formatted_status, 
+                "last_gen_timestamp": time.time()
+            })
             await update_live_ui(bot, uid)
+            
     elif action == "ui_clear":
         await update_user(uid, {"latest_otp": "<i>Cleared</i>", "last_otp_raw": None, "captured": 0, "last_gen": "None"})
         await update_live_ui(bot, uid)
+        
     elif action == "ui_logout":
         await users.delete_one({"uid": uid})
         await update_live_ui(bot, uid)

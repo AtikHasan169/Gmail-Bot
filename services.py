@@ -98,13 +98,13 @@ async def process_user(bot, uid, session, manual=False):
             for app in ["telegram", "google", "whatsapp", "facebook", "instagram", "discord", "twitter", "amazon", "tiktok"]:
                 if app in lower: app_name = app.capitalize(); break
             
-            # --- CLEAN FORMAT (CODE REMOVED FROM TEXT) ---
+            # --- MINIMAL DASHBOARD TEXT (Just Service & Time) ---
             formatted = (
-                f"🏢 <b>{app_name}</b>\n"
-                f"⏰ <i>{datetime.datetime.now().strftime('%H:%M:%S')}</i>"
+                f"📨 <b>{app_name}</b>\n"
+                f"⏰ {datetime.datetime.now().strftime('%H:%M:%S')}"
             )
             
-            # Save Raw OTP for the Button
+            # Update DB (Raw OTP goes to button)
             await update_user(uid, {
                 "latest_otp": formatted, 
                 "last_otp_raw": otp_code,
@@ -112,14 +112,10 @@ async def process_user(bot, uid, session, manual=False):
             })
             await users.update_one({"uid": uid}, {"$inc": {"captured": 1}})
             new_otp = True
-            
-            # REMOVED: await bot.send_message(...) - No more spam alerts
 
         if not manual: await seen_msgs.update_one({"key": f"{uid}:{mid}"}, {"$set": {"at": time.time()}}, upsert=True)
 
     await update_user(uid, {"last_check": datetime.datetime.now().strftime("%H:%M:%S")})
-    
-    # Update Dashboard if we found an OTP (This adds the button)
     if new_otp or manual: await update_live_ui(bot, uid)
 
 async def background_watcher(bot):

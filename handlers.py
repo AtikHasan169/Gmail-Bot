@@ -11,38 +11,23 @@ from auth import get_flow
 
 router = Router()
 
-# --- LOGIC 1: DELETE & REPOST (For Bottom Menu) ---
 async def refresh_and_repost(bot: Bot, uid: str):
-    """
-    Used by Bottom Menu 'Refresh'.
-    Deletes the old message and sends a fresh one at the bottom.
-    """
     user = await get_user(uid)
-    
-    # 1. Delete Old Message
     if user and user.get("main_msg_id"):
         try: await bot.delete_message(chat_id=uid, message_id=user["main_msg_id"])
         except: pass
-
-    # 2. Send New "Syncing" Message
     sent = await bot.send_message(uid, "🔄 <b>Syncing...</b>", parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
-    
-    # 3. Run Scan (This updates the "Syncing" msg to the Dashboard)
-    async with aiohttp.ClientSession() as s: 
-        await process_user(bot, uid, s, manual=True)
+    async with aiohttp.ClientSession() as s: await process_user(bot, uid, s, manual=True)
 
-# --- COMMANDS ---
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     uid = str(message.from_user.id)
     await message.answer("<b>System Initialized.</b>", reply_markup=get_main_menu())
-    
     text, kb = await get_dashboard_ui(uid)
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
 
-# --- MANUAL AUTH CODE HANDLER ---
 @router.message(F.text.regexp(r"(?i)code=4/|4/"))
 async def handle_code(message: Message, bot: Bot):
     uid = str(message.from_user.id)
@@ -52,7 +37,6 @@ async def handle_code(message: Message, bot: Bot):
         flow = get_flow(state=uid)
         flow.fetch_token(code=code)
         creds = flow.credentials
-        
         async with aiohttp.ClientSession() as s:
             headers = {"Authorization": f"Bearer {creds.token}"}
             async with s.get("https://www.googleapis.com/gmail/v1/users/me/profile", headers=headers) as p:
@@ -61,21 +45,16 @@ async def handle_code(message: Message, bot: Bot):
                     "email": profile.get("emailAddress"), "access": creds.token, "refresh": creds.refresh_token,
                     "captured": 0, "is_active": True, "history_id": None
                 })
-        
         await status.edit_text("✅ <b>Login Successful!</b>")
-        # Login success -> We treat this like a Refresh (Clean Repost)
         await refresh_and_repost(bot, uid)
         try: await message.delete()
         except: pass
     except Exception as e: await status.edit_text(f"❌ <b>Error:</b> {str(e)}")
 
-# --- BOTTOM MENU HANDLERS ---
+# --- BUTTONS ---
 @router.message(F.text == "↻ Refresh")
 async def btn_refresh(message: Message, bot: Bot):
-    """
-    Bottom Menu: Deletes old msg, sends new one.
-    """
-    try: await message.delete() # Delete the "Refresh" text user sent
+    try: await message.delete()
     except: pass
     await refresh_and_repost(bot, str(message.from_user.id))
 
@@ -95,32 +74,25 @@ async def btn_stop(message: Message):
     await update_user(str(message.from_user.id), {"is_active": False})
     await message.answer("<i>Paused</i>")
 
-# --- INLINE CALLBACKS ---
+# --- CALLBACKS ---
 @router.callback_query(F.data.startswith("ui_"))
 async def callbacks(q: CallbackQuery, bot: Bot):
     uid = str(q.from_user.id)
     action = q.data
-    await q.answer() # Stop spinner
+    await q.answer()
     
     if action == "ui_refresh":
-        # LOGIC 2: INLINE SYNC (No Delete)
-        # Just runs the scan. process_user will update the existing message.
-        async with aiohttp.ClientSession() as s: 
-            await process_user(bot, uid, s, manual=True)
-
+        async with aiohttp.ClientSession() as s: await process_user(bot, uid, s, manual=True)
     elif action == "ui_gen":
         user = await get_user(uid)
         if user and "email" in user:
             u, d = user["email"].split("@")
             mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in u)
             await update_user(uid, {"last_gen": f"{mixed}@{d}", "last_gen_timestamp": time.time()})
-            # Just update the text
             await update_live_ui(bot, uid)
-
     elif action == "ui_clear":
         await update_user(uid, {"latest_otp": "<i>Cleared</i>", "last_otp_raw": None, "captured": 0, "last_gen": "None"})
         await update_live_ui(bot, uid)
-
     elif action == "ui_logout":
         await users.delete_one({"uid": uid})
         await update_live_ui(bot, uid)

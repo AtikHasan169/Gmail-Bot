@@ -1,14 +1,9 @@
 import time
-from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton, 
-    ReplyKeyboardMarkup, KeyboardButton, 
-    CopyTextButton
-)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, CopyTextButton
 from database import get_user
 from auth import get_flow
 
 def get_main_menu():
-    """Simple Bottom Menu (Control Only)."""
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="▶ Start"), KeyboardButton(text="⏹ Stop")],
         [KeyboardButton(text="↻ Refresh"), KeyboardButton(text="ℹ Status")]
@@ -17,62 +12,51 @@ def get_main_menu():
 async def get_dashboard_ui(uid_str: str):
     user = await get_user(uid_str)
     
-    # --- LOGIN ---
+    # --- LOGIN UI ---
     if not user or not user.get("email"):
         flow = get_flow(state=uid_str)
         auth_url, _ = flow.authorization_url(prompt='consent')
-        text = "<b>⚠️ AUTH REQUIRED</b>\n────────────────\nLogin below to start."
-        return text, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 Login Google", url=auth_url)]])
+        text = "<b>⚠️ Login Required</b>"
+        return text, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 Google Login", url=auth_url)]])
 
-    # --- DASHBOARD DATA ---
-    latest_otp_text = user.get("latest_otp", "<i>Waiting...</i>")
+    # --- DATA ---
+    latest_otp_text = user.get("latest_otp", "<i>No code yet</i>") # Only Service Name + Time
+    raw_otp = user.get("last_otp_raw", None)
     gen_alias = user.get("last_gen", None)
     
-    # Extract Raw OTP for the button
-    # We stored the raw code in 'last_otp_raw' in services.py (we will add this logic)
-    raw_otp = user.get("last_otp_raw", None)
-    
     is_active = user.get("is_active", True)
-    status = "🟢" if is_active else "🔴"
-    
-    # --- BUILD INLINE KEYBOARD ---
+    status_icon = "🟢" if is_active else "🔴"
+    hits = user.get("captured", 0)
+
+    # --- MINIMAL DASHBOARD TEXT ---
+    text = (
+        f"{status_icon} <b>Hits:</b> {hits}\n"
+        f"────────────────\n"
+        f"{latest_otp_text}\n"
+        f"────────────────"
+    )
+
+    # --- BUTTONS ---
     kb_rows = []
     
-    # Row 1: Copy Buttons (The Feature You Wanted)
-    copy_row = []
+    # Row 1: OTP Code (ONLY THE CODE)
     if raw_otp:
-        copy_row.append(InlineKeyboardButton(
-            text=f"📋 OTP: {raw_otp}", 
-            copy_text=CopyTextButton(text=raw_otp)
-        ))
+        kb_rows.append([InlineKeyboardButton(text=raw_otp, copy_text=CopyTextButton(text=raw_otp))])
+        
+    # Row 2: Email (ONLY THE EMAIL)
     if gen_alias:
-        copy_row.append(InlineKeyboardButton(
-            text="📋 Copy Mail", 
-            copy_text=CopyTextButton(text=gen_alias)
-        ))
-    if copy_row:
-        kb_rows.append(copy_row)
+        kb_rows.append([InlineKeyboardButton(text=gen_alias, copy_text=CopyTextButton(text=gen_alias))])
 
-    # Row 2: Controls
+    # Row 3: Actions
     kb_rows.append([
         InlineKeyboardButton(text="↻ Scan", callback_data="ui_refresh"),
         InlineKeyboardButton(text="🔄 New Mail", callback_data="ui_gen")
     ])
     
-    # Row 3: Account
+    # Row 4: Settings
     kb_rows.append([
         InlineKeyboardButton(text="🧹 Clear", callback_data="ui_clear"),
         InlineKeyboardButton(text="🔌 Logout", callback_data="ui_logout")
     ])
-
-    text = (
-        f"🛡️ <b>GMAIL BOT</b> {status}\n"
-        f"────────────────\n\n"
-        f"<b>LATEST CODE:</b>\n"
-        f"{latest_otp_text}\n\n"
-        f"<b>CURRENT MAIL:</b>\n"
-        f"<code>{gen_alias if gen_alias else 'None'}</code>\n\n"
-        f"────────────────"
-    )
 
     return text, InlineKeyboardMarkup(inline_keyboard=kb_rows)

@@ -1,5 +1,4 @@
-python-telegram-bot
+aiogram
 aiohttp
 motor
-pymongo
-beautifulsoup4
+google-auth-oauthlib

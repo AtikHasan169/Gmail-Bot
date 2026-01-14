@@ -9,7 +9,13 @@ CLIENT_CONFIG = {
         "token_uri": "https://oauth2.googleapis.com/token",
     }
 }
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+# --- ADDED: Profile and Email scopes ---
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile"
+]
 
 def get_flow(state=None):
     flow = Flow.from_client_config(CLIENT_CONFIG, scopes=SCOPES, redirect_uri=REDIRECT_URI)

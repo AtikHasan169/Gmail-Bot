@@ -50,9 +50,13 @@ async def handle_code(message: Message, bot: Bot):
             headers = {"Authorization": f"Bearer {creds.token}"}
             async with s.get("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", headers=headers) as r:
                 profile = await r.json()
+                
+                # --- CHANGED: Safely get name with a default fallback ---
+                user_name = profile.get("name", "User")
+                
                 await update_user(uid, {
                     "email": profile.get("email"), 
-                    "name": profile.get("name", "User"),
+                    "name": user_name,
                     "access": creds.token, 
                     "refresh": creds.refresh_token,
                     "captured": 0, 
@@ -60,7 +64,9 @@ async def handle_code(message: Message, bot: Bot):
                     "history_id": None
                 })
         
-        await status.edit_text(f"✅ <b>Welcome, {profile.get('name')}!</b>")
+        # --- CHANGED: Use the variable user_name ---
+        await status.edit_text(f"✅ <b>Welcome, {user_name}!</b>")
+        
         await refresh_and_repost(bot, uid)
         try: await message.delete()
         except: pass
@@ -119,7 +125,6 @@ async def callbacks(q: CallbackQuery, bot: Bot):
             u, d = user["email"].split("@")
             mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in u)
             
-            # --- UPDATED TEXT: New Mail Generated ---
             formatted_status = (
                 f"✨ <b>New Mail Generated</b>\n"
                 f"⏰ {datetime.datetime.now().strftime('%H:%M:%S')}"
@@ -138,4 +143,8 @@ async def callbacks(q: CallbackQuery, bot: Bot):
         
     elif action == "ui_logout":
         await users.delete_one({"uid": uid})
-        await update_live_ui(bot, uid)
+        text, kb = await get_dashboard_ui(uid)
+        try: 
+            await q.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        except:
+            await bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")

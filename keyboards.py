@@ -41,14 +41,16 @@ async def get_dashboard_ui(uid_str: str):
     )
 
     kb_rows = []
+    # --- CHANGED: Added "Last OTP" prefix to the button label ---
     if raw_otp:
-        kb_rows.append([InlineKeyboardButton(text=raw_otp, copy_text=CopyTextButton(text=raw_otp))])
+        kb_rows.append([InlineKeyboardButton(text=f"Last OTP {raw_otp}", copy_text=CopyTextButton(text=raw_otp))])
+        
     if gen_alias:
         kb_rows.append([InlineKeyboardButton(text=gen_alias, copy_text=CopyTextButton(text=gen_alias))])
 
     kb_rows.append([
         InlineKeyboardButton(text="↻ Scan", callback_data="ui_refresh"),
-        InlineKeyboardButton(text="🔄 Gen New", callback_data="ui_gen") # <--- RENAMED
+        InlineKeyboardButton(text="🔄 Gen New", callback_data="ui_gen")
     ])
     kb_rows.append([
         InlineKeyboardButton(text="🧹 Clear", callback_data="ui_clear"),

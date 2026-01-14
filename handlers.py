@@ -112,11 +112,23 @@ async def btn_refresh(message: Message, bot: Bot):
     uid = str(message.from_user.id)
     if not await check_login(bot, uid, message): return
     
-    # 1. Delete the user's "Refresh" text message to keep chat clean
+    # 1. Delete the "Refresh" command message
     try: await message.delete()
     except: pass
 
-    # 2. Update the EXISTING Dashboard (No Deleting/Reposting)
+    # 2. Change the DASHBOARD message to "Syncing..."
+    user = await get_user(uid)
+    if user and user.get("main_msg_id"):
+        try:
+            await bot.edit_message_text(
+                chat_id=uid, 
+                message_id=user["main_msg_id"], 
+                text="🔄 <b>Syncing...</b>", 
+                parse_mode="HTML"
+            )
+        except: pass
+
+    # 3. Process the update (this will naturally edit the message BACK to the dashboard when done)
     async with aiohttp.ClientSession() as s: 
         await process_user(bot, uid, s, manual=True)
 
@@ -125,7 +137,6 @@ async def callbacks(q: CallbackQuery, bot: Bot):
     uid = str(q.from_user.id)
     action = q.data
     
-    # Allow logout to proceed without checking checks, but check for others
     if action != "ui_logout":
         user = await get_user(uid)
         if not user or not user.get("email"):
@@ -135,13 +146,9 @@ async def callbacks(q: CallbackQuery, bot: Bot):
             await q.answer()
             return
     
-    if action == "ui_refresh":
-        # --- CHANGED: Updates in place, just shows a small notification ---
-        await q.answer("🔄 Syncing...")
-        async with aiohttp.ClientSession() as s: 
-            await process_user(bot, uid, s, manual=True)
+    # NOTE: ui_refresh removed from here as the button was removed from keyboards.py
         
-    elif action == "ui_gen":
+    if action == "ui_gen":
         await q.answer()
         user = await get_user(uid)
         if user and "email" in user:
@@ -161,8 +168,8 @@ async def callbacks(q: CallbackQuery, bot: Bot):
             await update_live_ui(bot, uid)
             
     elif action == "ui_clear":
-        await q.answer("✅ Dashboard Cleared") 
         await update_user(uid, {"latest_otp": "<i>Cleared</i>", "last_otp_raw": None, "captured": 0, "last_gen": "None"})
+        await q.answer("✅ Dashboard Cleared") 
         await update_live_ui(bot, uid)
         
     elif action == "ui_logout":

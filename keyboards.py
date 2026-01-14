@@ -9,7 +9,6 @@ def get_main_menu():
     ], resize_keyboard=True)
 
 def get_account_kb():
-    # --- CHANGED: Added Back button at the bottom ---
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🧹 Clear Dashboard", callback_data="ui_clear")],
         [InlineKeyboardButton(text="🔌 Logout", callback_data="ui_logout")],
@@ -52,7 +51,7 @@ async def get_dashboard_ui(uid_str: str):
         gen_ts = user.get("last_gen_timestamp", 0)
         
         if otp_ts < gen_ts:
-            label = f"🚨 Last OTP: {raw_otp}"
+            label = f"🚨 Last: {raw_otp}"
         else:
             label = f"{raw_otp}"
             
@@ -61,8 +60,8 @@ async def get_dashboard_ui(uid_str: str):
     if gen_alias:
         kb_rows.append([InlineKeyboardButton(text=gen_alias, copy_text=CopyTextButton(text=gen_alias))])
 
+    # --- CHANGED: Removed "Sync/Scan" button. Only "Gen New" remains. ---
     kb_rows.append([
-        InlineKeyboardButton(text="↻ Scan", callback_data="ui_refresh"),
         InlineKeyboardButton(text="🔄 Gen New", callback_data="ui_gen")
     ])
 

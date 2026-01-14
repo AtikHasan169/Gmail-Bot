@@ -26,6 +26,10 @@ async def check_login(bot: Bot, uid: str, message: Message = None):
     return True
 
 async def refresh_and_repost(bot: Bot, uid: str):
+    """
+    Deletes the old dashboard and sends a brand new one. 
+    Used mainly for Login/Start to ensure the message is fresh.
+    """
     user = await get_user(uid)
     if user and user.get("main_msg_id"):
         try: await bot.delete_message(chat_id=uid, message_id=user["main_msg_id"])
@@ -107,28 +111,38 @@ async def btn_account(message: Message, bot: Bot):
 async def btn_refresh(message: Message, bot: Bot):
     uid = str(message.from_user.id)
     if not await check_login(bot, uid, message): return
+    
+    # 1. Delete the user's "Refresh" text message to keep chat clean
     try: await message.delete()
     except: pass
-    await refresh_and_repost(bot, uid)
+
+    # 2. Update the EXISTING Dashboard (No Deleting/Reposting)
+    async with aiohttp.ClientSession() as s: 
+        await process_user(bot, uid, s, manual=True)
 
 @router.callback_query(F.data.startswith("ui_"))
 async def callbacks(q: CallbackQuery, bot: Bot):
     uid = str(q.from_user.id)
     action = q.data
-    await q.answer()
     
+    # Allow logout to proceed without checking checks, but check for others
     if action != "ui_logout":
         user = await get_user(uid)
         if not user or not user.get("email"):
             text, kb = await get_dashboard_ui(uid)
             try: await q.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
             except: await bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
+            await q.answer()
             return
     
     if action == "ui_refresh":
-        async with aiohttp.ClientSession() as s: await process_user(bot, uid, s, manual=True)
+        # --- CHANGED: Updates in place, just shows a small notification ---
+        await q.answer("🔄 Syncing...")
+        async with aiohttp.ClientSession() as s: 
+            await process_user(bot, uid, s, manual=True)
         
     elif action == "ui_gen":
+        await q.answer()
         user = await get_user(uid)
         if user and "email" in user:
             u, d = user["email"].split("@")
@@ -147,11 +161,12 @@ async def callbacks(q: CallbackQuery, bot: Bot):
             await update_live_ui(bot, uid)
             
     elif action == "ui_clear":
-        await update_user(uid, {"latest_otp": "<i>Cleared</i>", "last_otp_raw": None, "captured": 0, "last_gen": "None"})
         await q.answer("✅ Dashboard Cleared") 
+        await update_user(uid, {"latest_otp": "<i>Cleared</i>", "last_otp_raw": None, "captured": 0, "last_gen": "None"})
         await update_live_ui(bot, uid)
         
     elif action == "ui_logout":
+        await q.answer()
         user = await get_user(uid)
         main_id = user.get("main_msg_id") if user else None
         
@@ -167,7 +182,7 @@ async def callbacks(q: CallbackQuery, bot: Bot):
         try: await q.message.delete()
         except: pass
         
-    # --- ADDED: Back Button Logic ---
     elif action == "ui_back":
+        await q.answer()
         try: await q.message.delete()
         except: pass

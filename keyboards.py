@@ -1,36 +1,63 @@
 import time
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton, 
+    ReplyKeyboardMarkup, KeyboardButton, 
+    CopyTextButton
+)
 from database import get_user
 from auth import get_flow
 
-def get_main_menu():
-    kb = [
-        [KeyboardButton(text="▶ Start"), KeyboardButton(text="⏹ Stop")],
-        [KeyboardButton(text="↻ Refresh"), KeyboardButton(text="ℹ Status")]
-    ]
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+def get_main_menu(copy_type=None, value=None):
+    row1 = [KeyboardButton(text="▶ Start"), KeyboardButton(text="⏹ Stop")]
+    row2 = [KeyboardButton(text="↻ Refresh"), KeyboardButton(text="ℹ Status")]
+    
+    rows = [row1, row2]
+    
+    # --- DYNAMIC COPY BUTTON ---
+    if copy_type and value:
+        if copy_type == "otp":
+            text = f"📋 Copy OTP: {value}"
+        elif copy_type == "mail":
+            text = f"📋 Copy Mail"
+        
+        rows.append([
+            KeyboardButton(
+                text=text, 
+                copy_text=CopyTextButton(text=value)
+            )
+        ])
+    
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 async def get_dashboard_ui(uid_str: str):
     user = await get_user(uid_str)
     
-    # --- 1. LOGIN BUTTON ---
+    # --- LOGIN INSTRUCTIONS ---
     if not user or not user.get("email"):
         flow = get_flow(state=uid_str)
         auth_url, _ = flow.authorization_url(prompt='consent')
-        text = "<b>⚠️ SYSTEM LOCKED</b>\nAuthorization required to access inbox."
+        
+        text = (
+            "<b>⚠️ AUTHENTICATION REQUIRED</b>\n"
+            "───────────────────────\n"
+            "1. Click the button below.\n"
+            "2. Authorize Google.\n"
+            "3. <b>Copy the code</b> shown on the screen.\n"
+            "4. <b>Paste the code</b> here in the chat.\n"
+            "───────────────────────"
+        )
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔗 Login with Google", url=auth_url)]
+            [InlineKeyboardButton(text="🔗 Get Login Code", url=auth_url)]
         ])
         return text, kb
 
-    # --- 2. CLEAN DASHBOARD ---
+    # --- DASHBOARD ---
     latest_otp = user.get("latest_otp", "<i>Waiting for new code...</i>")
     gen_alias = user.get("last_gen", "<i>No alias active</i>")
     is_active = user.get("is_active", True)
     
     state_icon = "🟢" if is_active else "🔴"
     
-    # Badges
     now = time.time()
     otp_fresh = (now - user.get("last_otp_timestamp", 0)) < 30
     alias_fresh = (now - user.get("last_gen_timestamp", 0)) < 30
@@ -46,13 +73,13 @@ async def get_dashboard_ui(uid_str: str):
         f"{alias_header}\n"
         f"<code>{gen_alias}</code>\n\n"
         f"────────────────\n"
-        f"💡 <i>Tap code above to copy</i>"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="↻ Scan", callback_data="ui_refresh"),
-            InlineKeyboardButton(text="🎲 New Alias", callback_data="ui_gen")
+            InlineKeyboardButton(text="⚡ Force Scan", callback_data="ui_refresh"),
+            # --- UPDATED BUTTON HERE ---
+            InlineKeyboardButton(text="🔄 Get New", callback_data="ui_gen")
         ],
         [
             InlineKeyboardButton(text="🧹 Clear", callback_data="ui_clear"),

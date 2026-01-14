@@ -1,1 +1,1 @@
-worker: python gmail_otp_bot.py
+worker: python main.py

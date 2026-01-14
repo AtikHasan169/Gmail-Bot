@@ -1,7 +1,6 @@
 import random
 import time
 import aiohttp
-from urllib.parse import urlparse, parse_qs
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
@@ -22,23 +21,14 @@ async def cmd_start(message: Message):
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
 
-# --- MANUAL LOGIN HANDLER (Paste 127.0.0.1 URL) ---
-@router.message(F.text.contains("127.0.0.1") & F.text.contains("code="))
-async def handle_manual_url(message: Message, bot: Bot):
+# --- GOOGLE AUTH HANDLER ---
+@router.message(F.text.startswith("4/"))
+async def handle_google_code(message: Message, bot: Bot):
     uid = str(message.from_user.id)
-    url = message.text.strip()
-    
+    code = message.text.strip()
+    status_msg = await message.answer(f"🔄 <b>Verifying Code...</b>")
+
     try:
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query)
-        code = params.get('code', [None])[0]
-        
-        if not code:
-            await message.answer("❌ <b>Error:</b> Bad Link.")
-            return
-
-        status_msg = await message.answer("🔄 <b>Verifying...</b>")
-
         flow = get_flow(state=uid)
         flow.fetch_token(code=code)
         creds = flow.credentials
@@ -57,15 +47,15 @@ async def handle_manual_url(message: Message, bot: Bot):
                     "history_id": None
                 })
         
-        await status_msg.edit_text("✅ <b>Login Successful!</b>")
+        await status_msg.edit_text(f"✅ <b>Login Successful!</b>")
         await update_live_ui(bot, uid)
         try: await message.delete()
         except: pass
 
     except Exception as e:
-        await message.answer(f"❌ <b>Login Failed:</b> {str(e)}")
+        await status_msg.edit_text(f"❌ <b>Login Failed:</b> {str(e)}")
 
-# --- STATUS PANEL ---
+# --- STATUS COMMAND ---
 @router.message(F.text == "ℹ Status")
 async def handle_status(message: Message):
     uid = str(message.from_user.id)
@@ -85,11 +75,11 @@ async def handle_status(message: Message):
         f"📧 <b>Email:</b> <code>{email}</code>\n"
         f"🎯 <b>Total Hits:</b> <code>{hits}</code>\n"
         f"⏳ <b>Last Sync:</b> {last_check}\n"
-        f"🔐 <b>Token:</b> Valid\n"
         f"────────────────"
     )
     await message.answer(report, parse_mode="HTML")
 
+# --- CONTROL BUTTONS ---
 @router.message(F.text == "↻ Refresh")
 async def handle_refresh(message: Message, bot: Bot):
     uid = str(message.from_user.id)
@@ -113,6 +103,7 @@ async def handle_stop(message: Message, bot: Bot):
     await message.answer("<i>Monitor Paused</i>")
     await update_live_ui(bot, uid)
 
+# --- CALLBACKS (Including Gen Mail Copy) ---
 @router.callback_query(F.data.startswith("ui_"))
 async def handle_callbacks(callback: CallbackQuery, bot: Bot):
     uid = str(callback.from_user.id)
@@ -127,8 +118,24 @@ async def handle_callbacks(callback: CallbackQuery, bot: Bot):
         if user and "email" in user:
             user_part, domain = user["email"].split("@")
             mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in user_part)
-            await update_user(uid, {"last_gen": f"{mixed}@{domain}", "last_gen_timestamp": time.time()})
+            new_alias = f"{mixed}@{domain}"
+            
+            await update_user(uid, {
+                "last_gen": new_alias, 
+                "last_gen_timestamp": time.time()
+            })
+            
+            # Update Dashboard
             await update_live_ui(bot, uid)
+            
+            # --- NEW: SEND COPY BUTTON FOR MAIL ---
+            kb = get_main_menu(copy_type="mail", value=new_alias)
+            await bot.send_message(
+                uid, 
+                f"📧 <b>Alias Generated:</b> <code>{new_alias}</code>", 
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
             
     elif action == "ui_clear":
         await update_user(uid, {"latest_otp": "<i>Log Cleared</i>", "captured": 0, "last_gen": "None"})

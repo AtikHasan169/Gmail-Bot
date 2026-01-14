@@ -6,9 +6,8 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 MONGO_URI = os.getenv("MONGO_URI")
 
-# Auto-Login Settings
-PORT = 8080
-REDIRECT_URI = f"http://127.0.0.1:{PORT}/callback"
+# CLASSIC OOB REDIRECT (The one that gives you the code on screen)
+REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
 
 if not MONGO_URI or not BOT_TOKEN:
     print("CRITICAL: Missing BOT_TOKEN or MONGO_URI.")

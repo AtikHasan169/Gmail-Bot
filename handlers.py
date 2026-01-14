@@ -51,18 +51,33 @@ async def handle_code(message: Message, bot: Bot):
         except: pass
     except Exception as e: await status.edit_text(f"❌ <b>Error:</b> {str(e)}")
 
-# --- BUTTONS ---
+# --- STATUS BUTTON (FIXED) ---
+@router.message(F.text == "ℹ Status")
+async def btn_status(message: Message):
+    uid = str(message.from_user.id)
+    user = await get_user(uid)
+    
+    if not user or not user.get("email"):
+        await message.answer("❌ <b>Not Logged In</b>", parse_mode="HTML")
+        return
+        
+    email = user.get("email")
+    hits = user.get("captured", 0)
+    
+    report = (
+        f"📊 <b>ACCOUNT STATS</b>\n"
+        f"────────────────\n"
+        f"📧 <code>{email}</code>\n"
+        f"🎯 <b>Hits:</b> {hits}\n"
+        f"────────────────"
+    )
+    await message.answer(report, parse_mode="HTML")
+
 @router.message(F.text == "↻ Refresh")
 async def btn_refresh(message: Message, bot: Bot):
     try: await message.delete()
     except: pass
     await refresh_and_repost(bot, str(message.from_user.id))
-
-@router.message(F.text == "ℹ Status")
-async def btn_status(message: Message):
-    user = await get_user(str(message.from_user.id))
-    if not user: return
-    await message.answer(f"📧 <code>{user.get('email')}</code>\nHits: {user.get('captured',0)}", parse_mode="HTML")
 
 @router.message(F.text == "▶ Start")
 async def btn_start(message: Message):
@@ -74,7 +89,6 @@ async def btn_stop(message: Message):
     await update_user(str(message.from_user.id), {"is_active": False})
     await message.answer("<i>Paused</i>")
 
-# --- CALLBACKS ---
 @router.callback_query(F.data.startswith("ui_"))
 async def callbacks(q: CallbackQuery, bot: Bot):
     uid = str(q.from_user.id)
@@ -96,4 +110,3 @@ async def callbacks(q: CallbackQuery, bot: Bot):
     elif action == "ui_logout":
         await users.delete_one({"uid": uid})
         await update_live_ui(bot, uid)
-        await bot.send_message(uid, "👋 <b>Logged Out.</b>")

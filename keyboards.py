@@ -19,18 +19,18 @@ async def get_dashboard_ui(uid_str: str):
         text = "<b>⚠️ Login Required</b>"
         return text, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 Google Login", url=auth_url)]])
 
-    # --- DATA ---
-    latest_otp_text = user.get("latest_otp", "<i>No code yet</i>") # Only Service Name + Time
+    # --- MONITOR UI ---
+    latest_otp_text = user.get("latest_otp", "<i>...</i>")
     raw_otp = user.get("last_otp_raw", None)
     gen_alias = user.get("last_gen", None)
-    
     is_active = user.get("is_active", True)
+    
+    # Simple Status Dot
     status_icon = "🟢" if is_active else "🔴"
-    hits = user.get("captured", 0)
 
-    # --- MINIMAL DASHBOARD TEXT ---
+    # --- MINIMAL TEXT ---
     text = (
-        f"{status_icon} <b>Hits:</b> {hits}\n"
+        f"<b>GMAIL MONITOR</b> {status_icon}\n"
         f"────────────────\n"
         f"{latest_otp_text}\n"
         f"────────────────"
@@ -39,21 +39,21 @@ async def get_dashboard_ui(uid_str: str):
     # --- BUTTONS ---
     kb_rows = []
     
-    # Row 1: OTP Code (ONLY THE CODE)
+    # 1. OTP Button (Only if code exists)
     if raw_otp:
         kb_rows.append([InlineKeyboardButton(text=raw_otp, copy_text=CopyTextButton(text=raw_otp))])
         
-    # Row 2: Email (ONLY THE EMAIL)
+    # 2. Email Button (Only if alias exists)
     if gen_alias:
         kb_rows.append([InlineKeyboardButton(text=gen_alias, copy_text=CopyTextButton(text=gen_alias))])
 
-    # Row 3: Actions
+    # 3. Actions
     kb_rows.append([
         InlineKeyboardButton(text="↻ Scan", callback_data="ui_refresh"),
         InlineKeyboardButton(text="🔄 New Mail", callback_data="ui_gen")
     ])
     
-    # Row 4: Settings
+    # 4. System
     kb_rows.append([
         InlineKeyboardButton(text="🧹 Clear", callback_data="ui_clear"),
         InlineKeyboardButton(text="🔌 Logout", callback_data="ui_logout")

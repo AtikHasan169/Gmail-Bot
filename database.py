@@ -3,7 +3,6 @@ from config import MONGO_URI
 
 client = AsyncIOMotorClient(MONGO_URI)
 db = client['gmail_otp_bot']
-
 users = db['users']
 seen_msgs = db['seen_messages']
 

@@ -10,11 +10,12 @@ CLIENT_CONFIG = {
     }
 }
 
-# --- ADDED: Profile and Email scopes ---
+# --- ADDED: "openid" to match what Google returns ---
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/userinfo.profile"
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "openid"
 ]
 
 def get_flow(state=None):

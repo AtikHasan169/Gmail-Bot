@@ -4,10 +4,17 @@ from database import get_user
 from auth import get_flow
 
 def get_main_menu():
-    # --- CHANGED: Removed "Start". Only Refresh and Status remain. ---
+    # --- CHANGED: Account on left, Refresh on right ---
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="↻ Refresh"), KeyboardButton(text="ℹ Status")]
+        [KeyboardButton(text="👤 Account"), KeyboardButton(text="↻ Refresh")]
     ], resize_keyboard=True)
+
+# --- ADDED: New Keyboard for Account Menu ---
+def get_account_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧹 Clear Dashboard", callback_data="ui_clear")],
+        [InlineKeyboardButton(text="🔌 Logout", callback_data="ui_logout")]
+    ])
 
 async def get_dashboard_ui(uid_str: str):
     user = await get_user(uid_str)
@@ -45,9 +52,9 @@ async def get_dashboard_ui(uid_str: str):
         gen_ts = user.get("last_gen_timestamp", 0)
         
         if otp_ts < gen_ts:
-            label = f"🚨 Last: {raw_otp}"
+            label = f"🚨 Last OTP: {raw_otp}"
         else:
-            label = f"{raw_otp}"
+            label = f"✨ Code {raw_otp}"
             
         kb_rows.append([InlineKeyboardButton(text=label, copy_text=CopyTextButton(text=raw_otp))])
         
@@ -58,9 +65,7 @@ async def get_dashboard_ui(uid_str: str):
         InlineKeyboardButton(text="↻ Scan", callback_data="ui_refresh"),
         InlineKeyboardButton(text="🔄 Gen New", callback_data="ui_gen")
     ])
-    kb_rows.append([
-        InlineKeyboardButton(text="🧹 Clear", callback_data="ui_clear"),
-        InlineKeyboardButton(text="🔌 Logout", callback_data="ui_logout")
-    ])
+    
+    # --- CHANGED: Removed Clear/Logout row from here ---
 
     return text, InlineKeyboardMarkup(inline_keyboard=kb_rows)

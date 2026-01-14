@@ -6,7 +6,7 @@ from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from database import update_user, get_user, users
-from keyboards import get_main_menu, get_dashboard_ui
+from keyboards import get_main_menu, get_dashboard_ui, get_account_kb
 from services import update_live_ui, process_user
 from auth import get_flow
 
@@ -51,8 +51,6 @@ async def cmd_start(message: Message):
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
 
-# --- REMOVED: btn_start handler ---
-
 @router.message(F.text.regexp(r"(?i)code=4/|4/"))
 async def handle_code(message: Message, bot: Bot):
     uid = str(message.from_user.id)
@@ -85,8 +83,9 @@ async def handle_code(message: Message, bot: Bot):
         except: pass
     except Exception as e: await status.edit_text(f"❌ <b>Error:</b> {str(e)}")
 
-@router.message(F.text == "ℹ Status")
-async def btn_status(message: Message, bot: Bot):
+# --- CHANGED: Renamed to Account, uses "👤 Account" trigger ---
+@router.message(F.text == "👤 Account")
+async def btn_account(message: Message, bot: Bot):
     uid = str(message.from_user.id)
     if not await check_login(bot, uid, message): return
 
@@ -103,7 +102,8 @@ async def btn_status(message: Message, bot: Bot):
         f"🎯 <b>Hits:</b> {hits}\n"
         f"────────────────"
     )
-    await message.answer(report, parse_mode="HTML")
+    # --- CHANGED: Added get_account_kb() for Clear/Logout buttons ---
+    await message.answer(report, reply_markup=get_account_kb(), parse_mode="HTML")
 
 @router.message(F.text == "↻ Refresh")
 async def btn_refresh(message: Message, bot: Bot):
@@ -150,12 +150,27 @@ async def callbacks(q: CallbackQuery, bot: Bot):
             
     elif action == "ui_clear":
         await update_user(uid, {"latest_otp": "<i>Cleared</i>", "last_otp_raw": None, "captured": 0, "last_gen": "None"})
+        # --- ADDED: Visual feedback for the button press ---
+        await q.answer("✅ Dashboard Cleared") 
         await update_live_ui(bot, uid)
         
     elif action == "ui_logout":
+        # 1. Capture info before deletion
+        user = await get_user(uid)
+        main_id = user.get("main_msg_id") if user else None
+        
+        # 2. Delete User
         await users.delete_one({"uid": uid})
-        text, kb = await get_dashboard_ui(uid)
-        try: 
-            await q.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        except:
-            await bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
+        
+        # 3. Update the Main Dashboard to Login Screen
+        login_text, login_kb = await get_dashboard_ui(uid)
+        if main_id:
+            try: await bot.edit_message_text(text=login_text, chat_id=uid, message_id=main_id, reply_markup=login_kb, parse_mode="HTML")
+            except: pass
+        else:
+             # Fallback if ID is missing
+             await bot.send_message(uid, login_text, reply_markup=login_kb, parse_mode="HTML")
+
+        # 4. Remove the Account Menu message (where the button was clicked)
+        try: await q.message.delete()
+        except: pass

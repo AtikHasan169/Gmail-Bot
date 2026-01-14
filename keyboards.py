@@ -5,8 +5,9 @@ from auth import get_flow
 
 def get_main_menu():
     return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="▶ Start"), KeyboardButton(text="⏹ Stop")],
-        [KeyboardButton(text="↻ Refresh"), KeyboardButton(text="ℹ Status")]
+        # --- CHANGED: Added "Start" back. It now sits next to Refresh ---
+        [KeyboardButton(text="▶ Start"), KeyboardButton(text="↻ Refresh")],
+        [KeyboardButton(text="ℹ Status")]
     ], resize_keyboard=True)
 
 async def get_dashboard_ui(uid_str: str):
@@ -30,11 +31,9 @@ async def get_dashboard_ui(uid_str: str):
     latest_otp_text = user.get("latest_otp", "<i>...</i>")
     raw_otp = user.get("last_otp_raw", None)
     gen_alias = user.get("last_gen", None)
-    is_active = user.get("is_active", True)
-    status_icon = "🟢" if is_active else "🔴"
-
+    
     text = (
-        f"<b>GMAIL MONITOR</b> {status_icon}\n"
+        f"<b>GMAIL MONITOR</b> 🟢\n"
         f"────────────────\n"
         f"{latest_otp_text}\n"
         f"────────────────"
@@ -43,13 +42,11 @@ async def get_dashboard_ui(uid_str: str):
     kb_rows = []
     
     if raw_otp:
-        # Retrieve timestamps (default to 0 if missing)
         otp_ts = user.get("last_otp_timestamp", 0)
         gen_ts = user.get("last_gen_timestamp", 0)
         
-        # Compare: If OTP is older than the last "Gen New" action -> It is a "Last OTP"
         if otp_ts < gen_ts:
-            label = f"✨ Last OTP {raw_otp}"
+            label = f"🚨 Last OTP: {raw_otp}"
         else:
             label = f"✨ Code {raw_otp}"
             

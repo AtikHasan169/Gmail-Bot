@@ -12,18 +12,13 @@ from auth import get_flow
 
 router = Router()
 
-# --- HELPER: Check Login Status ---
 async def check_login(bot: Bot, uid: str, message: Message = None):
     """Checks if user is logged in. If not, sends Login UI and returns False."""
     user = await get_user(uid)
     if not user or not user.get("email"):
-        # Generate Login UI
         text, kb = await get_dashboard_ui(uid)
-        
-        # If triggered by a message (button tap)
         if message:
             await message.answer(text, reply_markup=kb, parse_mode="HTML")
-        # If we need to just send it (rare case here)
         else:
             await bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
         return False
@@ -48,10 +43,17 @@ async def refresh_and_repost(bot: Bot, uid: str):
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     uid = str(message.from_user.id)
+    await update_user(uid, {"is_active": True}) 
+    
     await message.answer("<b>System Initialized.</b>", reply_markup=get_main_menu())
     text, kb = await get_dashboard_ui(uid)
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
+
+# --- ADDED: Start Button Handler (Reuses cmd_start logic) ---
+@router.message(F.text == "▶ Start")
+async def btn_start(message: Message):
+    await cmd_start(message)
 
 @router.message(F.text.regexp(r"(?i)code=4/|4/"))
 async def handle_code(message: Message, bot: Bot):
@@ -88,8 +90,6 @@ async def handle_code(message: Message, bot: Bot):
 @router.message(F.text == "ℹ Status")
 async def btn_status(message: Message, bot: Bot):
     uid = str(message.from_user.id)
-    
-    # --- CHECK LOGIN ---
     if not await check_login(bot, uid, message): return
 
     user = await get_user(uid)
@@ -110,30 +110,10 @@ async def btn_status(message: Message, bot: Bot):
 @router.message(F.text == "↻ Refresh")
 async def btn_refresh(message: Message, bot: Bot):
     uid = str(message.from_user.id)
-    # --- CHECK LOGIN ---
     if not await check_login(bot, uid, message): return
-
     try: await message.delete()
     except: pass
     await refresh_and_repost(bot, uid)
-
-@router.message(F.text == "▶ Start")
-async def btn_start(message: Message, bot: Bot):
-    uid = str(message.from_user.id)
-    # --- CHECK LOGIN ---
-    if not await check_login(bot, uid, message): return
-
-    await update_user(uid, {"is_active": True})
-    await message.answer("<i>Resumed</i>")
-
-@router.message(F.text == "⏹ Stop")
-async def btn_stop(message: Message, bot: Bot):
-    uid = str(message.from_user.id)
-    # --- CHECK LOGIN ---
-    if not await check_login(bot, uid, message): return
-
-    await update_user(uid, {"is_active": False})
-    await message.answer("<i>Paused</i>")
 
 @router.callback_query(F.data.startswith("ui_"))
 async def callbacks(q: CallbackQuery, bot: Bot):
@@ -141,12 +121,9 @@ async def callbacks(q: CallbackQuery, bot: Bot):
     action = q.data
     await q.answer()
     
-    # Allow logout even if not strictly fully logged in (to clear bugs), 
-    # but for everything else, check login.
     if action != "ui_logout":
         user = await get_user(uid)
         if not user or not user.get("email"):
-            # If inline button clicked but not logged in, prompt login
             text, kb = await get_dashboard_ui(uid)
             try: await q.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
             except: await bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")

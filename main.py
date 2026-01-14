@@ -3,6 +3,7 @@ import logging
 import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher
+from aiogram.client.default_bot_properties import DefaultBotProperties # <--- NEW IMPORT
 from aiogram.enums import ParseMode
 
 from config import BOT_TOKEN, PORT
@@ -55,7 +56,13 @@ async def google_callback(request):
 
 # --- MAIN ---
 async def main():
-    bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+    # --- FIX APPLIED HERE ---
+    # We now pass settings inside DefaultBotProperties
+    bot = Bot(
+        token=BOT_TOKEN, 
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
+    
     dp = Dispatcher()
     dp.include_router(router)
     

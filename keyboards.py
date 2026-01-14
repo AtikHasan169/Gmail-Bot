@@ -41,9 +41,19 @@ async def get_dashboard_ui(uid_str: str):
     )
 
     kb_rows = []
-    # --- CHANGED: Added "Last OTP" prefix to the button label ---
+    
     if raw_otp:
-        kb_rows.append([InlineKeyboardButton(text=f"Last OTP {raw_otp}", copy_text=CopyTextButton(text=raw_otp))])
+        # Retrieve timestamps (default to 0 if missing)
+        otp_ts = user.get("last_otp_timestamp", 0)
+        gen_ts = user.get("last_gen_timestamp", 0)
+        
+        # Compare: If OTP is older than the last "Gen New" action -> It is a "Last OTP"
+        if otp_ts < gen_ts:
+            label = f"✨ Last OTP {raw_otp}"
+        else:
+            label = f"✨ Code {raw_otp}"
+            
+        kb_rows.append([InlineKeyboardButton(text=label, copy_text=CopyTextButton(text=raw_otp))])
         
     if gen_alias:
         kb_rows.append([InlineKeyboardButton(text=gen_alias, copy_text=CopyTextButton(text=gen_alias))])

@@ -59,7 +59,6 @@ async def process_user(bot, uid, session, manual=False):
     
     new_messages_ids = []
     
-    # 1. HISTORY CHECK (Fast) or FULL SCAN (Manual/First Run)
     if manual or not user.get("history_id"):
         params = {"q": "is:unread", "maxResults": 5}
         async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers) as r:
@@ -103,7 +102,6 @@ async def process_user(bot, uid, session, manual=False):
             await update_live_ui(bot, uid)
         return
 
-    # 2. PROCESS NEW MESSAGES
     to_fetch = [mid for mid in new_messages_ids if not await seen_msgs.find_one({"key": f"{uid}:{mid}"})]
     if not to_fetch: return
 
@@ -120,9 +118,10 @@ async def process_user(bot, uid, session, manual=False):
             for app in ["telegram", "google", "whatsapp", "facebook", "instagram", "discord", "twitter", "amazon", "tiktok"]:
                 if app in lower_body: app_name = app.capitalize(); break
             
+            # --- FIXED HTML FORMATTING (Uses <b> and <code>) ---
             formatted_otp = (
-                f"📨 <b>Service:</b> {app_name}\n"
-                f"🔢 <b>Code:</b> <code>{codes[0]}</code>\n"
+                f"🏢 <b>{app_name}</b>\n"
+                f"🔢 <code>{codes[0]}</code>\n"
                 f"⏰ <i>{datetime.datetime.now().strftime('%H:%M:%S')}</i>"
             )
             await update_user(uid, {"latest_otp": formatted_otp, "last_otp_timestamp": time.time()})

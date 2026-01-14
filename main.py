@@ -3,7 +3,7 @@ import logging
 import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher
-from aiogram.client.bot import DefaultBotProperties # <--- FIXED IMPORT
+from aiogram.client.bot import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from config import BOT_TOKEN, PORT
@@ -14,7 +14,7 @@ from auth import get_flow
 
 logging.basicConfig(level=logging.INFO)
 
-# --- WEB SERVER (Captures Login) ---
+# --- WEB SERVER ---
 async def google_callback(request):
     code = request.query.get('code')
     uid = request.query.get('state')
@@ -23,28 +23,24 @@ async def google_callback(request):
         return web.Response(text="Error: Missing code or user state.")
 
     try:
-        # 1. Exchange Code for Tokens using Google Module
         flow = get_flow(state=uid)
         flow.fetch_token(code=code)
         creds = flow.credentials
         
-        # 2. Fetch Email Address
         async with aiohttp.ClientSession() as s:
             headers = {"Authorization": f"Bearer {creds.token}"}
             async with s.get("https://www.googleapis.com/gmail/v1/users/me/profile", headers=headers) as p:
                 profile = await p.json()
                 
-                # 3. Save to Database
                 await update_user(uid, {
                     "email": profile.get("emailAddress"),
                     "access": creds.token,
                     "refresh": creds.refresh_token,
                     "captured": 0,
                     "is_active": True,
-                    "history_id": None # Reset history on new login
+                    "history_id": None
                 })
 
-        # 4. Notify User in Telegram
         bot = request.app['bot']
         await bot.send_message(uid, "✅ <b>Login Successful!</b>\n<i>You can close the browser now.</i>", parse_mode="HTML")
         await update_live_ui(bot, uid)
@@ -56,7 +52,7 @@ async def google_callback(request):
 
 # --- MAIN ---
 async def main():
-    # Fix: We wrap settings in DefaultBotProperties
+    # Fix for Aiogram 3.7+
     bot = Bot(
         token=BOT_TOKEN, 
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -65,7 +61,6 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
     
-    # Setup Web Server
     app = web.Application()
     app['bot'] = bot
     app.router.add_get('/callback', google_callback)

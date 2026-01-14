@@ -48,7 +48,7 @@ async def get_dashboard_ui(uid_str: str):
         if otp_ts < gen_ts:
             label = f"🚨 Last OTP: {raw_otp}"
         else:
-            label = f"✨ Code {raw_otp}"
+            label = f"{raw_otp}"
             
         kb_rows.append([InlineKeyboardButton(text=label, copy_text=CopyTextButton(text=raw_otp))])
         

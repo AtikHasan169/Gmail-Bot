@@ -59,34 +59,29 @@ async def process_user(bot, uid, session, manual=False):
     new_ids = []
     
     try:
-        if manual or not user.get("history_id"):
-            params = {"q": "is:unread", "maxResults": 5}
-            async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers, timeout=TIMEOUT) as r:
-                 if r.status == 401:
-                     access = await refresh_google_token(uid, session)
-                     if not access: return
-                     headers["Authorization"] = f"Bearer {access}"
-                     async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers, timeout=TIMEOUT) as r2: res = await r2.json()
-                 else: res = await r.json()
-                 if "messages" in res:
-                     new_ids = [m['id'] for m in res["messages"]]
-                     async with session.get("https://www.googleapis.com/gmail/v1/users/me/profile", headers=headers, timeout=TIMEOUT) as p:
-                         prof = await p.json()
-                         if "historyId" in prof: await update_user(uid, {"history_id": prof["historyId"]})
-        else:
-            params = {"startHistoryId": user.get("history_id"), "historyTypes": "messageAdded"}
-            async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/history", params=params, headers=headers, timeout=TIMEOUT) as r:
-                res = await r.json() if r.status == 200 else {}
-                if "historyId" in res: await update_user(uid, {"history_id": res["historyId"]})
-                if "history" in res:
-                    for h in res["history"]:
-                        if "messagesAdded" in h:
-                            for m in h["messagesAdded"]: new_ids.append(m["message"]["id"])
+        # --- OPTIMIZATION 1: Use basic polling mostly, it's faster for OTPs ---
+        # We skip the complex History ID check for manual refreshes to be snappy.
+        
+        # --- OPTIMIZATION 2: search 'newer_than:1d' to ignore old junk ---
+        # --- OPTIMIZATION 3: maxResults=3 is enough for the latest OTP ---
+        params = {"q": "is:unread newer_than:1d", "maxResults": 3}
+        
+        async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers, timeout=TIMEOUT) as r:
+                if r.status == 401:
+                    access = await refresh_google_token(uid, session)
+                    if not access: return
+                    headers["Authorization"] = f"Bearer {access}"
+                    async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers, timeout=TIMEOUT) as r2: res = await r2.json()
+                else: res = await r.json()
+                
+                if "messages" in res:
+                    new_ids = [m['id'] for m in res["messages"]]
+                    # --- REMOVED: Profile/HistoryID call. It wasted time. ---
+
     except: pass
 
     if not new_ids:
         if manual: 
-            # --- CHANGED: AM/PM Format ---
             await update_user(uid, {"last_check": datetime.datetime.now(BD_TZ).strftime("%I:%M:%S %p")})
             await update_live_ui(bot, uid)
         return
@@ -104,7 +99,6 @@ async def process_user(bot, uid, session, manual=False):
         if codes:
             otp_code = codes[0]
             
-            # --- CHANGED: AM/PM Format ---
             formatted = (
                 f"✨ <b>New OTP Received</b>\n"
                 f"⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}"
@@ -120,7 +114,6 @@ async def process_user(bot, uid, session, manual=False):
 
         if not manual: await seen_msgs.update_one({"key": f"{uid}:{mid}"}, {"$set": {"at": time.time()}}, upsert=True)
 
-    # --- CHANGED: AM/PM Format ---
     await update_user(uid, {"last_check": datetime.datetime.now(BD_TZ).strftime("%I:%M:%S %p")})
     if new_otp or manual: await update_live_ui(bot, uid)
 

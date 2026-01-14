@@ -10,6 +10,7 @@ from database import users, seen_msgs, update_user, get_user
 from keyboards import get_dashboard_ui
 
 TIMEOUT = aiohttp.ClientTimeout(total=5)
+BD_TZ = datetime.timezone(datetime.timedelta(hours=6))
 
 async def refresh_google_token(uid, session):
     user = await get_user(uid)
@@ -85,7 +86,8 @@ async def process_user(bot, uid, session, manual=False):
 
     if not new_ids:
         if manual: 
-            await update_user(uid, {"last_check": datetime.datetime.now().strftime("%H:%M:%S")})
+            # --- CHANGED: AM/PM Format ---
+            await update_user(uid, {"last_check": datetime.datetime.now(BD_TZ).strftime("%I:%M:%S %p")})
             await update_live_ui(bot, uid)
         return
 
@@ -102,10 +104,10 @@ async def process_user(bot, uid, session, manual=False):
         if codes:
             otp_code = codes[0]
             
-            # --- UPDATED TEXT: New OTP Received ---
+            # --- CHANGED: AM/PM Format ---
             formatted = (
                 f"✨ <b>New OTP Received</b>\n"
-                f"⏰ {datetime.datetime.now().strftime('%H:%M:%S')}"
+                f"⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}"
             )
             
             await update_user(uid, {
@@ -118,7 +120,8 @@ async def process_user(bot, uid, session, manual=False):
 
         if not manual: await seen_msgs.update_one({"key": f"{uid}:{mid}"}, {"$set": {"at": time.time()}}, upsert=True)
 
-    await update_user(uid, {"last_check": datetime.datetime.now().strftime("%H:%M:%S")})
+    # --- CHANGED: AM/PM Format ---
+    await update_user(uid, {"last_check": datetime.datetime.now(BD_TZ).strftime("%I:%M:%S %p")})
     if new_otp or manual: await update_live_ui(bot, uid)
 
 async def background_watcher(bot):

@@ -11,6 +11,7 @@ from services import update_live_ui, process_user
 from auth import get_flow
 
 router = Router()
+BD_TZ = datetime.timezone(datetime.timedelta(hours=6))
 
 async def check_login(bot: Bot, uid: str, message: Message = None):
     """Checks if user is logged in. If not, sends Login UI and returns False."""
@@ -50,7 +51,6 @@ async def cmd_start(message: Message):
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
 
-# --- ADDED: Start Button Handler (Reuses cmd_start logic) ---
 @router.message(F.text == "▶ Start")
 async def btn_start(message: Message):
     await cmd_start(message)
@@ -138,9 +138,10 @@ async def callbacks(q: CallbackQuery, bot: Bot):
             u, d = user["email"].split("@")
             mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in u)
             
+            # --- CHANGED: AM/PM Format ---
             formatted_status = (
                 f"✨ <b>New Mail Generated</b>\n"
-                f"⏰ {datetime.datetime.now().strftime('%H:%M:%S')}"
+                f"⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}"
             )
             
             await update_user(uid, {

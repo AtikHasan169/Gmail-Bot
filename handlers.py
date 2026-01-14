@@ -12,6 +12,23 @@ from auth import get_flow
 
 router = Router()
 
+# --- HELPER: Check Login Status ---
+async def check_login(bot: Bot, uid: str, message: Message = None):
+    """Checks if user is logged in. If not, sends Login UI and returns False."""
+    user = await get_user(uid)
+    if not user or not user.get("email"):
+        # Generate Login UI
+        text, kb = await get_dashboard_ui(uid)
+        
+        # If triggered by a message (button tap)
+        if message:
+            await message.answer(text, reply_markup=kb, parse_mode="HTML")
+        # If we need to just send it (rare case here)
+        else:
+            await bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
+        return False
+    return True
+
 async def refresh_and_repost(bot: Bot, uid: str):
     user = await get_user(uid)
     if user and user.get("main_msg_id"):
@@ -50,8 +67,6 @@ async def handle_code(message: Message, bot: Bot):
             headers = {"Authorization": f"Bearer {creds.token}"}
             async with s.get("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", headers=headers) as r:
                 profile = await r.json()
-                
-                # --- CHANGED: Safely get name with a default fallback ---
                 user_name = profile.get("name", "User")
                 
                 await update_user(uid, {
@@ -64,22 +79,20 @@ async def handle_code(message: Message, bot: Bot):
                     "history_id": None
                 })
         
-        # --- CHANGED: Use the variable user_name ---
         await status.edit_text(f"✅ <b>Welcome, {user_name}!</b>")
-        
         await refresh_and_repost(bot, uid)
         try: await message.delete()
         except: pass
     except Exception as e: await status.edit_text(f"❌ <b>Error:</b> {str(e)}")
 
 @router.message(F.text == "ℹ Status")
-async def btn_status(message: Message):
+async def btn_status(message: Message, bot: Bot):
     uid = str(message.from_user.id)
-    user = await get_user(uid)
-    if not user or not user.get("email"):
-        await message.answer("❌ <b>Not Logged In</b>", parse_mode="HTML")
-        return
     
+    # --- CHECK LOGIN ---
+    if not await check_login(bot, uid, message): return
+
+    user = await get_user(uid)
     name = user.get("name", "Unknown")
     email = user.get("email")
     hits = user.get("captured", 0)
@@ -96,18 +109,30 @@ async def btn_status(message: Message):
 
 @router.message(F.text == "↻ Refresh")
 async def btn_refresh(message: Message, bot: Bot):
+    uid = str(message.from_user.id)
+    # --- CHECK LOGIN ---
+    if not await check_login(bot, uid, message): return
+
     try: await message.delete()
     except: pass
-    await refresh_and_repost(bot, str(message.from_user.id))
+    await refresh_and_repost(bot, uid)
 
 @router.message(F.text == "▶ Start")
-async def btn_start(message: Message):
-    await update_user(str(message.from_user.id), {"is_active": True})
+async def btn_start(message: Message, bot: Bot):
+    uid = str(message.from_user.id)
+    # --- CHECK LOGIN ---
+    if not await check_login(bot, uid, message): return
+
+    await update_user(uid, {"is_active": True})
     await message.answer("<i>Resumed</i>")
 
 @router.message(F.text == "⏹ Stop")
-async def btn_stop(message: Message):
-    await update_user(str(message.from_user.id), {"is_active": False})
+async def btn_stop(message: Message, bot: Bot):
+    uid = str(message.from_user.id)
+    # --- CHECK LOGIN ---
+    if not await check_login(bot, uid, message): return
+
+    await update_user(uid, {"is_active": False})
     await message.answer("<i>Paused</i>")
 
 @router.callback_query(F.data.startswith("ui_"))
@@ -115,6 +140,17 @@ async def callbacks(q: CallbackQuery, bot: Bot):
     uid = str(q.from_user.id)
     action = q.data
     await q.answer()
+    
+    # Allow logout even if not strictly fully logged in (to clear bugs), 
+    # but for everything else, check login.
+    if action != "ui_logout":
+        user = await get_user(uid)
+        if not user or not user.get("email"):
+            # If inline button clicked but not logged in, prompt login
+            text, kb = await get_dashboard_ui(uid)
+            try: await q.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+            except: await bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
+            return
     
     if action == "ui_refresh":
         async with aiohttp.ClientSession() as s: await process_user(bot, uid, s, manual=True)

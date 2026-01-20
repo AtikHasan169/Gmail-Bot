@@ -2,7 +2,7 @@ import random
 import time
 import datetime
 import aiohttp
-import re  # Added for robust pattern matching
+import re
 from urllib.parse import unquote
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
@@ -17,17 +17,9 @@ BD_TZ = datetime.timezone(datetime.timedelta(hours=6))
 
 # --- Helper to Extract Code ---
 def extract_google_code(text):
-    """
-    Hunts for the specific Google Auth Code pattern (starting with 4/ or 4%2F)
-    anywhere in the text, ignoring surrounding URL junk.
-    """
-    # Pattern: Starts with 4/ or 4%2F, followed by a long string of safe chars
-    # We unquote first to turn 4%2F into 4/
+    """Hunts for the specific Google Auth Code pattern."""
     clean_text = unquote(text)
-    
-    # Regex looks for '4/' followed by letters, numbers, underscores, or dashes
     match = re.search(r"(4/[a-zA-Z0-9_-]+)", clean_text)
-    
     if match:
         return match.group(1)
     return None
@@ -69,57 +61,7 @@ async def cmd_start(message: Message):
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
 
-# --- CHANGED: Catch-All Text Handler that checks for Code ---
-@router.message(F.text)
-async def handle_text(message: Message, bot: Bot):
-    uid = str(message.from_user.id)
-    text = message.text.strip()
-    
-    # Ignore commands or simple menu clicks
-    if text.startswith("/") or text in ["👤 Account", "↻ Refresh"]:
-        return
-
-    # Attempt to find the code
-    code = extract_google_code(text)
-    
-    if not code:
-        # If it's not a code and not a command, we just ignore it
-        return
-
-    # If code found, proceed with login
-    status = await message.answer("🔄 <b>Verifying...</b>")
-    try:
-        flow = get_flow(state=uid)
-        
-        # CRITICAL: Must match the config redirect_uri exactly
-        flow.redirect_uri = "http://localhost"
-        
-        flow.fetch_token(code=code)
-        creds = flow.credentials
-        
-        async with aiohttp.ClientSession() as s:
-            headers = {"Authorization": f"Bearer {creds.token}"}
-            async with s.get("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", headers=headers) as r:
-                profile = await r.json()
-                user_name = profile.get("name", "User")
-                
-                await update_user(uid, {
-                    "email": profile.get("email"), 
-                    "name": user_name,
-                    "access": creds.token, 
-                    "refresh": creds.refresh_token,
-                    "captured": 0, 
-                    "is_active": True, 
-                    "history_id": None
-                })
-        
-        await status.edit_text(f"✅ <b>Welcome, {user_name}!</b>")
-        await refresh_and_repost(bot, uid)
-        try: await message.delete()
-        except: pass
-        
-    except Exception as e: 
-        await status.edit_text(f"❌ <b>Login Failed:</b>\n{str(e)}\n\nMake sure you copied the FULL link.")
+# --- SPECIFIC HANDLERS FIRST (Account & Refresh) ---
 
 @router.message(F.text == "👤 Account")
 async def btn_account(message: Message, bot: Bot):
@@ -167,6 +109,54 @@ async def btn_refresh(message: Message, bot: Bot):
         pass
     finally:
         await update_live_ui(bot, uid)
+
+# --- GENERIC HANDLER LAST (The Code Hunter) ---
+# This must be at the bottom so it doesn't "eat" the buttons above.
+
+@router.message(F.text)
+async def handle_text(message: Message, bot: Bot):
+    uid = str(message.from_user.id)
+    text = message.text.strip()
+    
+    # Attempt to find the code
+    code = extract_google_code(text)
+    
+    if not code:
+        # If no code found, and it wasn't a button click (handled above), ignore it.
+        return
+
+    # If code found, proceed with login
+    status = await message.answer("🔄 <b>Verifying...</b>")
+    try:
+        flow = get_flow(state=uid)
+        flow.redirect_uri = "http://localhost"
+        
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        
+        async with aiohttp.ClientSession() as s:
+            headers = {"Authorization": f"Bearer {creds.token}"}
+            async with s.get("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", headers=headers) as r:
+                profile = await r.json()
+                user_name = profile.get("name", "User")
+                
+                await update_user(uid, {
+                    "email": profile.get("email"), 
+                    "name": user_name,
+                    "access": creds.token, 
+                    "refresh": creds.refresh_token,
+                    "captured": 0, 
+                    "is_active": True, 
+                    "history_id": None
+                })
+        
+        await status.edit_text(f"✅ <b>Welcome, {user_name}!</b>")
+        await refresh_and_repost(bot, uid)
+        try: await message.delete()
+        except: pass
+        
+    except Exception as e: 
+        await status.edit_text(f"❌ <b>Login Failed:</b>\n{str(e)}\n\nMake sure you copied the FULL link.")
 
 @router.callback_query(F.data.startswith("ui_"))
 async def callbacks(q: CallbackQuery, bot: Bot):

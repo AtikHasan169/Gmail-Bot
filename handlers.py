@@ -2,35 +2,26 @@ import random
 import time
 import datetime
 import aiohttp
-import re
-from urllib.parse import unquote
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
-# --- UPDATED IMPORT: Added delete_user_data ---
-from database import update_user, get_user, users, delete_user_data
+
+# --- IMPORTS ---
+from database import update_user, get_user, delete_user_data
 from keyboards import get_main_menu, get_dashboard_ui, get_account_kb
 from services import update_live_ui, process_user
-from auth import get_flow
 
 router = Router()
+# Timezone for Bangladesh (GMT+6)
 BD_TZ = datetime.timezone(datetime.timedelta(hours=6))
 
-# --- Helper: Hunt for the code in messy links ---
-def extract_google_code(text):
-    """
-    Hunts for the specific Google Auth Code pattern (starting with 4/ or 4%2F)
-    anywhere in the text, ignoring surrounding URL junk.
-    """
-    if not text: return None
-    clean_text = unquote(text) # Fix %2F to /
-    match = re.search(r"(4/[a-zA-Z0-9_-]+)", clean_text)
-    if match:
-        return match.group(1)
-    return None
+# --- HELPER FUNCTIONS ---
 
 async def check_login(bot: Bot, uid: str, message: Message = None):
-    """Checks if user is logged in. If not, sends Login UI."""
+    """
+    Checks if user is logged in. 
+    If not, sends the Automatic Login UI (Link Button).
+    """
     user = await get_user(uid)
     if not user or not user.get("email"):
         text, kb = await get_dashboard_ui(uid)
@@ -42,35 +33,50 @@ async def check_login(bot: Bot, uid: str, message: Message = None):
     return True
 
 async def refresh_and_repost(bot: Bot, uid: str):
-    """Refreshes the dashboard message."""
+    """
+    Refreshes the dashboard message.
+    Deletes the old message and sends a new one to keep the chat clean.
+    """
     user = await get_user(uid)
+    
+    # Delete old message if it exists
     if user and user.get("main_msg_id"):
         try: await bot.delete_message(chat_id=uid, message_id=user["main_msg_id"])
         except: pass
     
+    # Send temporary syncing message
     sent = await bot.send_message(uid, "🔄 <b>Syncing...</b>", parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
     
+    # Run a manual process check
     try:
         async with aiohttp.ClientSession() as s: 
             await process_user(bot, uid, s, manual=True)
     except: pass
     finally:
+        # Update the message with the final Dashboard UI
         await update_live_ui(bot, uid)
+
+# --- COMMAND HANDLERS ---
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     uid = str(message.from_user.id)
+    # Activate user in DB
     await update_user(uid, {"is_active": True}) 
     
+    # Send the Bottom Menu (Account / Refresh)
     await message.answer("<b>System Initialized.</b>", reply_markup=get_main_menu())
+    
+    # Get the Dashboard UI
+    # If logged out -> Returns "Connect Gmail" button (Web Link)
+    # If logged in -> Returns the standard Dashboard
     text, kb = await get_dashboard_ui(uid)
+    
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
 
-# ---------------------------------------------------------
-# SPECIFIC HANDLERS (Must be ABOVE the Generic Text Handler)
-# ---------------------------------------------------------
+# --- BUTTON HANDLERS ---
 
 @router.message(F.text == "👤 Account")
 async def btn_account(message: Message, bot: Bot):
@@ -97,10 +103,13 @@ async def btn_refresh(message: Message, bot: Bot):
     uid = str(message.from_user.id)
     if not await check_login(bot, uid, message): return
     
+    # Delete the user's "Refresh" text command to keep chat clean
     try: await message.delete()
     except: pass
 
     user = await get_user(uid)
+    
+    # Show "Syncing..." status
     if user and user.get("main_msg_id"):
         try:
             await bot.edit_message_text(
@@ -111,71 +120,24 @@ async def btn_refresh(message: Message, bot: Bot):
             )
         except: pass
 
+    # Run the check
     try:
         async with aiohttp.ClientSession() as s: 
             await process_user(bot, uid, s, manual=True)
     except: 
         pass
     finally:
+        # Restore the dashboard
         await update_live_ui(bot, uid)
 
-# ---------------------------------------------------------
-# GENERIC HANDLER (The Code Hunter)
-# Must be LAST so it doesn't "eat" button clicks
-# ---------------------------------------------------------
-
-@router.message(F.text)
-async def handle_text(message: Message, bot: Bot):
-    uid = str(message.from_user.id)
-    text = message.text.strip()
-    
-    # 1. Check if text contains a Google Code
-    code = extract_google_code(text)
-    
-    # 2. If no code found, ignore (it's just random chat)
-    if not code:
-        return
-
-    # 3. Code found -> Login Logic
-    status = await message.answer("🔄 <b>Verifying...</b>")
-    try:
-        flow = get_flow(state=uid)
-        
-        # CRITICAL: Must match config.py exactly for Desktop flow
-        flow.redirect_uri = "http://localhost"
-        
-        flow.fetch_token(code=code)
-        creds = flow.credentials
-        
-        async with aiohttp.ClientSession() as s:
-            headers = {"Authorization": f"Bearer {creds.token}"}
-            async with s.get("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", headers=headers) as r:
-                profile = await r.json()
-                user_name = profile.get("name", "User")
-                
-                await update_user(uid, {
-                    "email": profile.get("email"), 
-                    "name": user_name,
-                    "access": creds.token, 
-                    "refresh": creds.refresh_token,
-                    "captured": 0, 
-                    "is_active": True, 
-                    "history_id": None
-                })
-        
-        await status.edit_text(f"✅ <b>Welcome, {user_name}!</b>")
-        await refresh_and_repost(bot, uid)
-        try: await message.delete()
-        except: pass
-        
-    except Exception as e: 
-        await status.edit_text(f"❌ <b>Login Failed:</b>\n{str(e)}\n\nMake sure you copied the FULL link.")
+# --- CALLBACK QUERY HANDLERS (Inline Buttons) ---
 
 @router.callback_query(F.data.startswith("ui_"))
 async def callbacks(q: CallbackQuery, bot: Bot):
     uid = str(q.from_user.id)
     action = q.data
     
+    # If user tries to click buttons but is logged out (except logout button)
     if action != "ui_logout":
         user = await get_user(uid)
         if not user or not user.get("email"):
@@ -186,10 +148,12 @@ async def callbacks(q: CallbackQuery, bot: Bot):
             return
     
     if action == "ui_gen":
+        # Generate a new "Dot Trick" alias
         await q.answer()
         user = await get_user(uid)
         if user and "email" in user:
             u, d = user["email"].split("@")
+            # Randomly capitalize/lowercase letters to create a unique-looking alias
             mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in u)
             
             formatted_status = (
@@ -205,19 +169,28 @@ async def callbacks(q: CallbackQuery, bot: Bot):
             await update_live_ui(bot, uid)
             
     elif action == "ui_clear":
-        await update_user(uid, {"latest_otp": "<i>Cleared</i>", "last_otp_raw": None, "captured": 0, "last_gen": "None"})
+        # Clear the dashboard stats
+        await update_user(uid, {
+            "latest_otp": "<i>Cleared</i>", 
+            "last_otp_raw": None, 
+            "captured": 0, 
+            "last_gen": "None"
+        })
         await q.answer("✅ Dashboard Cleared") 
         await update_live_ui(bot, uid)
         
     elif action == "ui_logout":
+        # Logout Logic
         await q.answer()
         user = await get_user(uid)
         main_id = user.get("main_msg_id") if user else None
         
-        # --- CHANGED: Use delete_user_data for RAM+DB cleaning ---
+        # Completely wipe data from RAM and DB
         await delete_user_data(uid)
         
+        # Get the "Login Page" UI
         login_text, login_kb = await get_dashboard_ui(uid)
+        
         if main_id:
             try: await bot.edit_message_text(text=login_text, chat_id=uid, message_id=main_id, reply_markup=login_kb, parse_mode="HTML")
             except: pass
@@ -228,6 +201,7 @@ async def callbacks(q: CallbackQuery, bot: Bot):
         except: pass
         
     elif action == "ui_back":
+        # Just close the menu
         await q.answer()
         try: await q.message.delete()
         except: pass

@@ -1,44 +1,50 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import MONGO_URI
 
+# Initialize Client
 client = AsyncIOMotorClient(MONGO_URI)
+
+# Database Name
 db = client['gmail_otp_bot']
+
+# Collections
 users = db['users']
 seen_msgs = db['seen_messages']
+oauth_states = db['oauth_states'] # Stores the secret "state" tokens for login
+server_lock = db['server_lock']   # Stores the Highlander ID to prevent conflicts
 
 # --- RAM CACHE ---
 USER_CACHE = {}
 
 async def get_user(uid: str):
-    # 1. Try to get from RAM first (Super Fast)
+    # 1. Try RAM (Fast)
     if uid in USER_CACHE:
         return USER_CACHE[uid]
     
-    # 2. If not in RAM, get from Database (Slower)
+    # 2. Try DB (Slow)
     user = await users.find_one({"uid": uid})
     
-    # 3. Save to RAM for next time
+    # 3. Update RAM
     if user:
         USER_CACHE[uid] = user
         
     return user
 
 async def update_user(uid: str, data: dict):
-    # 1. Save to Database (Safe)
+    # 1. Update DB
     await users.update_one({"uid": uid}, {"$set": data}, upsert=True)
     
-    # 2. Update RAM (Fast)
+    # 2. Update RAM
     if uid in USER_CACHE:
         USER_CACHE[uid].update(data)
     else:
-        # If not in cache, we just leave it empty. 
-        # The next 'get_user' will fetch the full updated profile from DB.
+        # Fetch fresh to ensure we have specific fields if needed later
         pass
 
 async def delete_user_data(uid: str):
-    # 1. Delete from Database
+    # 1. Delete DB
     await users.delete_one({"uid": uid})
     
-    # 2. Delete from RAM
+    # 2. Clear RAM
     if uid in USER_CACHE:
         del USER_CACHE[uid]

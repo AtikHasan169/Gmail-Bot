@@ -10,7 +10,7 @@ CLIENT_CONFIG = {
     }
 }
 
-# --- ADDED: "openid" to match what Google returns ---
+# Scopes: What permissions we are asking for
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -19,6 +19,17 @@ SCOPES = [
 ]
 
 def get_flow(state=None):
-    flow = Flow.from_client_config(CLIENT_CONFIG, scopes=SCOPES, redirect_uri=REDIRECT_URI)
-    if state: flow.state = state
+    """
+    Creates a Google OAuth Flow object.
+    'state' is the secret ID we pass to Google to remember WHICH user is logging in.
+    """
+    flow = Flow.from_client_config(
+        CLIENT_CONFIG, 
+        scopes=SCOPES, 
+        redirect_uri=REDIRECT_URI
+    )
+    
+    if state: 
+        flow.state = state
+        
     return flow

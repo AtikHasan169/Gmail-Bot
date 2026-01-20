@@ -1,6 +1,7 @@
 import time
+import uuid
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, CopyTextButton
-from database import get_user
+from database import get_user, db
 from auth import get_flow
 
 def get_main_menu():
@@ -18,24 +19,33 @@ def get_account_kb():
 async def get_dashboard_ui(uid_str: str):
     user = await get_user(uid_str)
     
+    # CASE 1: User NOT logged in
     if not user or not user.get("email"):
-        flow = get_flow(state=uid_str)
+        # Generate a unique state ID for this specific login attempt
+        state_token = uuid.uuid4().hex
+        
+        # Save it to DB so 'main.py' knows who this user is when they return from Google
+        await db.oauth_states.insert_one({
+            "state": state_token,
+            "user_id": int(uid_str),
+            "created_at": time.time()
+        })
+        
+        # Generate the Official Google Login Link
+        flow = get_flow(state=state_token)
         auth_url, _ = flow.authorization_url(prompt='consent')
         
-        # --- UPDATED INSTRUCTIONS FOR LOCALHOST ---
         text = (
-            "<b>⚠️ AUTHENTICATION REQUIRED</b>\n"
+            "<b>🔒 AUTHENTICATION REQUIRED</b>\n"
             "────────────────────────\n"
-            "1. Tap <b>Google Login</b> below.\n"
-            "2. Authorize the app (Click <b>Advanced > Go to...</b> if warned).\n"
-            "3. You will see a page saying <b>'This site can't be reached'</b>.\n"
-            "4. <b>THIS IS NORMAL.</b>\n"
-            "5. Copy the <b>ENTIRE LINK</b> from your browser's address bar.\n"
-            "6. Paste that link here.\n"
+            "Click the button below to connect your Gmail account.\n"
+            "You will be redirected to Google and then automatically back here.\n"
             "────────────────────────"
         )
-        return text, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 Google Login", url=auth_url)]])
+        # The button sends them to your Railway Server
+        return text, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Connect Gmail", url=auth_url)]])
 
+    # CASE 2: User IS logged in (Show Dashboard)
     latest_otp_text = user.get("latest_otp", "<i>...</i>")
     raw_otp = user.get("last_otp_raw", None)
     gen_alias = user.get("last_gen", None)

@@ -13,7 +13,8 @@ from aiogram.enums import ParseMode
 from config import BOT_TOKEN, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, INSTANCE_ID, PORT
 from database import db, update_user
 from handlers import router, refresh_and_repost
-from services import background_watcher
+# --- ADDED: process_user and update_live_ui for direct editing ---
+from services import background_watcher, process_user, update_live_ui 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -64,14 +65,10 @@ async def handle_google_callback(request):
                 user_name = profile.get("name", user_name)
     except: pass
 
-    # 4. Clean up Old UI (Delete "Connect" Button)
-    old_user_data = await db.users.find_one({"uid": user_id})
+    # 4. Clean up Old UI 
+    # We do NOT delete the old message anymore. We will edit it below.
     bot = request.app['bot']
     
-    if old_user_data and old_user_data.get("main_msg_id"):
-        try: await bot.delete_message(chat_id=user_id, message_id=old_user_data["main_msg_id"])
-        except: pass
-
     # 5. Save Data to DB
     await update_user(user_id, {
         "google_token": token_data,
@@ -83,70 +80,150 @@ async def handle_google_callback(request):
         "captured": 0
     })
     
-    # 6. Notify Telegram User
+    # 6. Notify Telegram User (EDIT LOGIC)
+    ui_updated = False
+    
     try:
-        await bot.send_message(user_id, f"✅ <b>Login Successful!</b>\nConnected: {user_email}", parse_mode="HTML")
-        await refresh_and_repost(bot, user_id)
-    except: pass
+        # Step A: Find the old Auth Message ID
+        user_data = await db.users.find_one({"uid": user_id})
+        msg_id = user_data.get("main_msg_id") if user_data else None
 
-    # 7. THE "ZENOX MAIL" BRANDED REDIRECT PAGE
-    # We fetch the username dynamically so the 'Open Telegram' button works for ANY bot
+        if msg_id:
+            # Step B: Show "Syncing" status on the existing message
+            try:
+                await bot.edit_message_text(
+                    chat_id=user_id, 
+                    message_id=msg_id, 
+                    text=f"✅ <b>Login Successful!</b>\nConnected: {user_email}\n🔄 Syncing emails...", 
+                    parse_mode="HTML"
+                )
+                ui_updated = True
+            except Exception as e:
+                # If editing fails (message deleted?), we mark as failed to trigger fallback
+                ui_updated = False
+
+            # Step C: Fetch Data and Update to Dashboard
+            if ui_updated:
+                async with aiohttp.ClientSession() as s: 
+                    await process_user(bot, user_id, s, manual=True)
+                await update_live_ui(bot, user_id)
+
+    except Exception as e:
+        logger.error(f"UI Edit Failed: {e}")
+        ui_updated = False
+
+    # 7. Fallback (If edit failed, use old method)
+    if not ui_updated:
+        try:
+            await bot.send_message(user_id, f"✅ <b>Login Successful!</b>\nConnected: {user_email}", parse_mode="HTML")
+            await refresh_and_repost(bot, user_id)
+        except: pass
+
+    # 8. THE NEW "ZENOX MAIL" CONNECTED PAGE
     bot_username = request.app.get('bot_username', 'GmailBot')
     tg_link = f"tg://resolve?domain={bot_username}"
     
     html = f"""
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
-        <title>Zenox Mail</title> <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Zenox Mail | Connected</title>
         <style>
-            body {{ 
-                font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
-                background-color: #f0f2f5; 
+            :root {{
+                --bg: #0f1115;
+                --card: #181b21;
+                --primary: #29b6f6;
+                --text: #ffffff;
+                --subtext: #8b9bb4;
+            }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                background-color: var(--bg);
+                color: var(--text);
+                margin: 0;
+                height: 100vh;
                 display: flex;
                 flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                text-align: center;
+            }}
+            .container {{
+                background: var(--card);
+                padding: 40px;
+                border-radius: 24px;
+                box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+                width: 90%;
+                max-width: 320px;
+                animation: slideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+            }}
+            .icon-box {{
+                width: 80px;
+                height: 80px;
+                background: rgba(41, 182, 246, 0.1);
+                border-radius: 50%;
+                display: flex;
                 align-items: center;
                 justify-content: center;
-                height: 100vh;
-                margin: 0;
+                margin: 0 auto 20px;
             }}
-            .card {{
-                background: white;
-                padding: 40px;
-                border-radius: 16px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-                text-align: center;
-                max-width: 300px;
+            .checkmark {{
+                font-size: 40px;
+                color: var(--primary);
+                animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) 0.3s backwards;
             }}
-            .icon {{ font-size: 50px; margin-bottom: 20px; }}
-            h2 {{ margin: 0 0 10px 0; color: #1a1a1a; }}
-            p {{ color: #666; margin-bottom: 30px; line-height: 1.5; }}
-            .btn {{ 
-                display: block; 
-                background-color: #0088cc; 
-                color: white; 
-                padding: 14px 20px; 
-                text-decoration: none; 
-                border-radius: 12px; 
-                font-weight: 600; 
+            h1 {{
+                font-size: 24px;
+                margin: 0 0 10px;
+                font-weight: 700;
+            }}
+            p {{
+                color: var(--subtext);
+                font-size: 15px;
+                margin: 0 0 30px;
+                line-height: 1.5;
+            }}
+            .btn {{
+                display: block;
+                width: 100%;
+                padding: 14px 0;
+                background: linear-gradient(90deg, #29b6f6, #0088cc);
+                color: white;
+                text-decoration: none;
+                border-radius: 12px;
+                font-weight: 600;
                 font-size: 16px;
-                transition: background 0.2s;
+                transition: transform 0.2s, box-shadow 0.2s;
             }}
-            .btn:hover {{ background-color: #0077b5; }}
+            .btn:active {{
+                transform: scale(0.98);
+            }}
+            @keyframes slideUp {{
+                from {{ opacity: 0; transform: translateY(30px); }}
+                to {{ opacity: 1; transform: translateY(0); }}
+            }}
+            @keyframes popIn {{
+                from {{ opacity: 0; transform: scale(0.5); }}
+                to {{ opacity: 1; transform: scale(1); }}
+            }}
         </style>
     </head>
     <body>
-        <div class="card">
-            <div class="icon">✅</div>
-            <h2>Zenox Mail Connected!</h2> <p>Your Gmail is successfully linked.</p>
-            <a href="{tg_link}" class="btn">Open Telegram</a>
+        <div class="container">
+            <div class="icon-box">
+                <div class="checkmark">✓</div>
+            </div>
+            <h1>Connected!</h1>
+            <p>Your Gmail has been successfully linked to Zenox Mail.</p>
+            <a href="{tg_link}" class="btn">Return to Telegram</a>
         </div>
-
         <script>
-            // Auto-redirect logic
+            // Auto-redirect after 1.5 seconds so user sees the success animation
             setTimeout(function() {{
                 window.location.href = "{tg_link}";
-            }}, 500);
+            }}, 1500);
         </script>
     </body>
     </html>

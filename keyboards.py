@@ -1,8 +1,12 @@
 import time
 import uuid
+import logging
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, CopyTextButton
 from database import get_user, db
 from auth import get_flow
+
+# Setup simple logging to help debug if needed
+logger = logging.getLogger(__name__)
 
 def get_main_menu():
     return ReplyKeyboardMarkup(keyboard=[
@@ -19,20 +23,25 @@ def get_account_kb():
 async def get_dashboard_ui(uid_str: str):
     user = await get_user(uid_str)
     
-    # CASE 1: User NOT logged in
+    # CASE 1: User NOT logged in (Generate the Login Link)
     if not user or not user.get("email"):
-        # 1. Generate a Secret Session ID (State)
+        # 1. Generate a unique "Secret ID" (State)
         state_token = uuid.uuid4().hex
         
-        # 2. SAVE IT TO DB (Critical Step!)
-        # If this is missing, you get "Session Expired"
-        await db.oauth_states.insert_one({
-            "state": state_token,
-            "user_id": int(uid_str), # Save as int to match main.py logic
-            "created_at": time.time()
-        })
+        # 2. SAVE to Database (The most important step)
+        # We try/except to catch any rare database connection errors
+        try:
+            await db.oauth_states.insert_one({
+                "state": state_token,
+                "user_id": int(uid_str), # Storing as integer for consistency
+                "created_at": time.time()
+            })
+            # This print will show up in Railway logs so you know it worked
+            print(f"✅ DEBUG: Saved State {state_token} for User {uid_str}") 
+        except Exception as e:
+            print(f"❌ CRITICAL ERROR: Could not save state to DB: {e}")
         
-        # 3. Generate the Link using that specific State
+        # 3. Generate Link using that specific State
         flow = get_flow(state=state_token)
         auth_url, _ = flow.authorization_url(prompt='consent')
         

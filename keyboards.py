@@ -21,14 +21,17 @@ async def get_dashboard_ui(uid_str: str):
     if not user or not user.get("email"):
         flow = get_flow(state=uid_str)
         auth_url, _ = flow.authorization_url(prompt='consent')
+        
+        # --- UPDATED INSTRUCTIONS FOR LOCALHOST ---
         text = (
             "<b>⚠️ AUTHENTICATION REQUIRED</b>\n"
             "────────────────────────\n"
             "1. Tap <b>Google Login</b> below.\n"
-            "2. Select your Google Account.\n"
-            "3. Allow the permissions.\n"
-            "4. You will see a code on the screen.\n"
-            "5. <b>Copy that code</b> and paste it here.\n"
+            "2. Authorize the app (Click <b>Advanced > Go to...</b> if warned).\n"
+            "3. You will see a page saying <b>'This site can't be reached'</b>.\n"
+            "4. <b>THIS IS NORMAL.</b>\n"
+            "5. Copy the <b>ENTIRE LINK</b> from your browser's address bar.\n"
+            "6. Paste that link here.\n"
             "────────────────────────"
         )
         return text, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔗 Google Login", url=auth_url)]])
@@ -60,7 +63,6 @@ async def get_dashboard_ui(uid_str: str):
     if gen_alias:
         kb_rows.append([InlineKeyboardButton(text=gen_alias, copy_text=CopyTextButton(text=gen_alias))])
 
-    # --- CHANGED: Removed "Sync/Scan" button. Only "Gen New" remains. ---
     kb_rows.append([
         InlineKeyboardButton(text="🔄 Gen New", callback_data="ui_gen")
     ])

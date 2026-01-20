@@ -61,7 +61,7 @@ async def get_dashboard_ui(uid_str: str):
     gen_alias = user.get("last_gen", None)
     
     text = (
-        f"<b>GMAIL MONITOR</b> 🟢\n"
+        f"<b>Zenox Mail</b> 🟢\n"
         f"────────────────\n"
         f"{latest_otp_text}\n"
         f"────────────────"

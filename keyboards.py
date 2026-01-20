@@ -15,10 +15,10 @@ def get_main_menu():
 
 def get_account_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🧹 Clear Dashboard", callback_data="ui_clear")],
         [InlineKeyboardButton(text="🔌 Logout", callback_data="ui_logout")],
         [InlineKeyboardButton(text="🔙 Back", callback_data="ui_back")]
     ])
+
 
 async def get_dashboard_ui(uid_str: str):
     user = await get_user(uid_str)

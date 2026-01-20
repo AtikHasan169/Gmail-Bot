@@ -88,17 +88,17 @@ async def btn_account(message: Message, bot: Bot):
     user = await get_user(uid)
     name = user.get("name", "Unknown")
     email = user.get("email")
-    hits = user.get("captured", 0)
     
     report = (
-        f"📊 <b>ACCOUNT STATS</b>\n"
+        f"📊 <b>ACCOUNT INFO</b>\n"
         f"────────────────\n"
         f"👤 <b>Name:</b> {name}\n"
         f"📧 <b>Email:</b> <code>{email}</code>\n"
-        f"🎯 <b>Hits:</b> {hits}\n"
         f"────────────────"
     )
     await message.answer(report, reply_markup=get_account_kb(), parse_mode="HTML")
+
+
 
 @router.message(F.text == "↻ Refresh")
 async def btn_refresh(message: Message, bot: Bot):

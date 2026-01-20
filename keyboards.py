@@ -21,17 +21,18 @@ async def get_dashboard_ui(uid_str: str):
     
     # CASE 1: User NOT logged in
     if not user or not user.get("email"):
-        # Generate a unique state ID for this specific login attempt
+        # 1. Generate a Secret Session ID (State)
         state_token = uuid.uuid4().hex
         
-        # Save it to DB so 'main.py' knows who this user is when they return from Google
+        # 2. SAVE IT TO DB (Critical Step!)
+        # If this is missing, you get "Session Expired"
         await db.oauth_states.insert_one({
             "state": state_token,
-            "user_id": int(uid_str),
+            "user_id": int(uid_str), # Save as int to match main.py logic
             "created_at": time.time()
         })
         
-        # Generate the Official Google Login Link
+        # 3. Generate the Link using that specific State
         flow = get_flow(state=state_token)
         auth_url, _ = flow.authorization_url(prompt='consent')
         
@@ -42,7 +43,6 @@ async def get_dashboard_ui(uid_str: str):
             "You will be redirected to Google and then automatically back here.\n"
             "────────────────────────"
         )
-        # The button sends them to your Railway Server
         return text, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚀 Connect Gmail", url=auth_url)]])
 
     # CASE 2: User IS logged in (Show Dashboard)

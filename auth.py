@@ -2,7 +2,7 @@ from google_auth_oauthlib.flow import Flow
 from config import CLIENT_ID, CLIENT_SECRET, REDIRECT_URI
 
 CLIENT_CONFIG = {
-    "web": {
+    "installed": {
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",

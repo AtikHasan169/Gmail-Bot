@@ -88,7 +88,7 @@ async def process_user(bot, uid, session, manual=False):
     try:
         # --- ADJUSTED: 5 is the sweet spot. ---
         # Enough to skip past a few junk emails, but not too heavy.
-        params = {"q": "is:unread newer_than:1d", "maxResults": 5}
+        params = {"q": "is:unread newer_than:1d", "maxResults": 1}
         
         async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers, timeout=TIMEOUT) as r:
                 if r.status == 401:

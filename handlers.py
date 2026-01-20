@@ -2,6 +2,7 @@ import random
 import time
 import datetime
 import aiohttp
+from urllib.parse import unquote
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
@@ -26,10 +27,6 @@ async def check_login(bot: Bot, uid: str, message: Message = None):
     return True
 
 async def refresh_and_repost(bot: Bot, uid: str):
-    """
-    Deletes the old dashboard and sends a brand new one. 
-    Used mainly for Login/Start to ensure the message is fresh.
-    """
     user = await get_user(uid)
     if user and user.get("main_msg_id"):
         try: await bot.delete_message(chat_id=uid, message_id=user["main_msg_id"])
@@ -55,13 +52,35 @@ async def cmd_start(message: Message):
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
 
-@router.message(F.text.regexp(r"(?i)code=4/|4/"))
+# --- CHANGED: Improved Regex and Extraction Logic ---
+@router.message(F.text.regexp(r"(?i)(code=|4/|4%2F)"))
 async def handle_code(message: Message, bot: Bot):
     uid = str(message.from_user.id)
-    code = message.text.split("code=")[1].split("&")[0].strip() if "code=" in message.text else message.text.strip()
+    text = message.text.strip()
+    
+    # robust extraction
+    try:
+        if "code=" in text:
+            # Extract everything between 'code=' and the next '&' (or end of string)
+            raw_code = text.split("code=")[1].split("&")[0]
+        else:
+            # Assume the whole text is the code
+            raw_code = text
+            
+        # Decode URL characters (e.g. changes %2F back to /)
+        code = unquote(raw_code).strip()
+        
+    except Exception:
+        await message.answer("❌ <b>Could not read code.</b>\nPlease copy the ENTIRE link and try again.")
+        return
+
     status = await message.answer("🔄 <b>Verifying...</b>")
     try:
         flow = get_flow(state=uid)
+        
+        # OOB/Desktop flow sometimes requires this specific redirect_uri to match
+        flow.redirect_uri = "http://localhost"
+        
         flow.fetch_token(code=code)
         creds = flow.credentials
         
@@ -85,7 +104,8 @@ async def handle_code(message: Message, bot: Bot):
         await refresh_and_repost(bot, uid)
         try: await message.delete()
         except: pass
-    except Exception as e: await status.edit_text(f"❌ <b>Error:</b> {str(e)}")
+    except Exception as e: 
+        await status.edit_text(f"❌ <b>Login Failed:</b>\n{str(e)}\n\nTry clicking 'Gen New' or /start to get a fresh login link.")
 
 @router.message(F.text == "👤 Account")
 async def btn_account(message: Message, bot: Bot):
@@ -115,7 +135,6 @@ async def btn_refresh(message: Message, bot: Bot):
     try: await message.delete()
     except: pass
 
-    # Change to Syncing
     user = await get_user(uid)
     if user and user.get("main_msg_id"):
         try:
@@ -127,14 +146,12 @@ async def btn_refresh(message: Message, bot: Bot):
             )
         except: pass
 
-    # --- CHANGED: Added Safety Net (try/finally) ---
     try:
         async with aiohttp.ClientSession() as s: 
             await process_user(bot, uid, s, manual=True)
     except: 
         pass
     finally:
-        # This GUARANTEES the dashboard returns, even if internet fails
         await update_live_ui(bot, uid)
 
 @router.callback_query(F.data.startswith("ui_"))

@@ -11,18 +11,18 @@ from aiogram.enums import ParseMode
 
 # --- IMPORTS ---
 from config import BOT_TOKEN, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, INSTANCE_ID, PORT
-from database import db, client 
-from handlers import router
+from database import db, client, update_user
+from handlers import router, refresh_and_repost
 from services import background_watcher
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- WEB SERVER HANDLER (The "Catcher") ---
+# --- WEB SERVER HANDLER (Catches the Google Redirect) ---
 async def handle_google_callback(request):
     """
-    Google sends the user here after they click 'Allow'.
-    We grab the code, find who the user is, and save the token.
+    Google sends the user here after they login.
+    We grab the code, find the user in DB, and save their token.
     """
     code = request.query.get('code')
     state = request.query.get('state')
@@ -30,14 +30,15 @@ async def handle_google_callback(request):
     if not code or not state:
         return web.Response(text="❌ Error: Missing code or state.")
 
-    # 1. Find who this state belongs to (The Secret Link)
+    # 1. Verify the State (Security Check)
+    # We look up which Telegram User generated this link
     oauth_record = await db.oauth_states.find_one({"state": state})
     if not oauth_record:
-        return web.Response(text="❌ Error: Invalid or expired login session.")
+        return web.Response(text="❌ Error: Session expired or invalid. Please try again from the bot.")
         
     user_id = str(oauth_record['user_id'])
 
-    # 2. Exchange Code for Token (Back-channel to Google)
+    # 2. Exchange Code for Access Token
     token_url = "https://oauth2.googleapis.com/token"
     data = {
         "client_id": CLIENT_ID,
@@ -54,8 +55,7 @@ async def handle_google_callback(request):
     if "error" in token_data:
         return web.Response(text=f"❌ Google Error: {token_data.get('error_description')}")
 
-    # 3. Success! Save tokens to the User
-    # We fetch their profile info quickly to greet them
+    # 3. Get User Profile (Email/Name)
     access_token = token_data['access_token']
     headers = {"Authorization": f"Bearer {access_token}"}
     
@@ -70,105 +70,95 @@ async def handle_google_callback(request):
                 user_name = profile.get("name", user_name)
     except: pass
 
-    await db.users.update_one(
-        {"uid": user_id},
-        {"$set": {
-            "google_token": token_data, # Store full token data
-            "access": access_token,
-            "refresh": token_data.get("refresh_token"),
-            "email": user_email,
-            "name": user_name,
-            "is_active": True,
-            "captured": 0
-        }},
-        upsert=True
-    )
+    # 4. Save to Database
+    await update_user(user_id, {
+        "google_token": token_data,
+        "access": access_token,
+        "refresh": token_data.get("refresh_token"),
+        "email": user_email,
+        "name": user_name,
+        "is_active": True,
+        "captured": 0
+    })
     
-    # 4. Notify User on Telegram
+    # 5. Notify User on Telegram
     try:
-        # We need to access the bot instance from the app
         bot = request.app['bot']
         await bot.send_message(
             user_id, 
-            f"✅ <b>Login Successful!</b>\n\nConnected as: <code>{user_email}</code>\n<i>You can now return to the chat.</i>", 
+            f"✅ <b>Login Successful!</b>\n\nConnected as: <code>{user_email}</code>", 
             parse_mode="HTML"
         )
-        
-        # Trigger a dashboard refresh
-        from handlers import refresh_and_repost
+        # Force the dashboard to refresh immediately
         await refresh_and_repost(bot, user_id)
         
     except Exception as e:
         logger.error(f"Failed to notify user: {e}")
 
-    # 5. Show Success Page in Browser
-    html_content = """
+    # 6. Show Success Page in Browser
+    html = """
     <html>
         <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
-            <h1 style="color: green;">✅ Login Successful!</h1>
-            <p>Your Gmail account is now connected to the bot.</p>
-            <p>You can close this window.</p>
+            <h1 style="color: #2ecc71;">✅ Connected!</h1>
+            <p>You can close this window and return to Telegram.</p>
             <script>window.close();</script>
         </body>
     </html>
     """
-    return web.Response(text=html_content, content_type='text/html')
+    return web.Response(text=html, content_type='text/html')
 
-# --- CONFLICT MONITOR ---
+# --- CONFLICT MONITOR (The Killer) ---
 async def monitor_deployment_conflict():
+    """Kills this process if a newer deployment starts."""
     lock_col = db['server_lock']
     while True:
         try:
             lock = await lock_col.find_one({"_id": "process_lock"})
             if lock and lock.get("active_id") != INSTANCE_ID:
-                logger.warning(f"⚠️ New Bot Detected. Shutting down...")
+                logger.warning(f"⚠️ New Instance Detected. Stopping old instance...")
                 os._exit(0)
         except: pass
         await asyncio.sleep(10)
 
-# --- MAIN ENTRY POINT ---
+# --- MAIN APP ---
 async def main():
     if not BOT_TOKEN:
         sys.exit("❌ Missing BOT_TOKEN")
 
-    # 1. Database & Highlander Lock
+    # 1. Register this instance as the Active One
     await db['server_lock'].update_one(
-        {"_id": "process_lock"}, {"$set": {"active_id": INSTANCE_ID}}, upsert=True
+        {"_id": "process_lock"}, 
+        {"$set": {"active_id": INSTANCE_ID}}, 
+        upsert=True
     )
-    logger.info(f"👑 Claimed Process Lock. ID: {INSTANCE_ID[:8]}")
-    logger.info("⏳ Waiting 5s for old instance to stop...")
+    logger.info(f"👑 Claimed Lock ID: {INSTANCE_ID[:8]}")
+    logger.info("⏳ Waiting 5s for old instances to clear...")
     await asyncio.sleep(5)
-    
-    # 2. Setup Bot
+
+    # 2. Start Bot
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
 
-    # 3. Setup Web Server (aiohttp)
+    # 3. Start Web Server
     app = web.Application()
-    app['bot'] = bot # Store bot so the web handler can use it
-    
-    # This route MUST match what you put in Google Console
-    app.router.add_get('/auth/google', handle_google_callback) 
+    app['bot'] = bot
+    app.router.add_get('/auth/google', handle_google_callback)
     
     runner = web.AppRunner(app)
     await runner.setup()
-    
-    # Bind to 0.0.0.0 so Railway can reach it on the assigned PORT
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
     
-    logger.info(f"🌍 Web Server running on Port {PORT}")
-    logger.info(f"🔗 Waiting for Google at: {REDIRECT_URI}")
+    logger.info(f"🌍 Server listening on Port {PORT}")
+    logger.info(f"🔗 Callback URI: {REDIRECT_URI}")
 
     # 4. Start Background Tasks
     asyncio.create_task(monitor_deployment_conflict())
     asyncio.create_task(background_watcher(bot))
-    
-    # 5. Start Polling
+
+    # 5. Run
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("🤖 Bot Started Polling...")
-    
     try:
         await dp.start_polling(bot)
     finally:

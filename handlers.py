@@ -71,7 +71,7 @@ async def cmd_start(message: Message):
     uid = str(message.from_user.id)
     await update_user(uid, {"is_active": True}) 
     
-    await message.answer("<b>System Initialized.</b>", reply_markup=get_main_menu())
+    #await message.answer("<b>System Initialized.</b>", reply_markup=get_main_menu())
     
     # Returns the Web Login button
     text, kb = await get_dashboard_ui(uid)

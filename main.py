@@ -11,18 +11,18 @@ from aiogram.enums import ParseMode
 
 # --- IMPORTS ---
 from config import BOT_TOKEN, CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, INSTANCE_ID, PORT
-from database import db, client, update_user
+from database import db, update_user
 from handlers import router, refresh_and_repost
 from services import background_watcher
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- WEB SERVER HANDLER (Catches the Google Redirect) ---
+# --- WEB SERVER HANDLER (The "Catcher") ---
 async def handle_google_callback(request):
     """
-    Google sends the user here after they login.
-    We grab the code, find the user in DB, and save their token.
+    Google redirects the user here after login.
+    We grab the 'code', match the 'state', and log them in.
     """
     code = request.query.get('code')
     state = request.query.get('state')
@@ -31,7 +31,6 @@ async def handle_google_callback(request):
         return web.Response(text="❌ Error: Missing code or state.")
 
     # 1. Verify the State (Security Check)
-    # We look up which Telegram User generated this link
     oauth_record = await db.oauth_states.find_one({"state": state})
     if not oauth_record:
         return web.Response(text="❌ Error: Session expired or invalid. Please try again from the bot.")
@@ -70,7 +69,10 @@ async def handle_google_callback(request):
                 user_name = profile.get("name", user_name)
     except: pass
 
-    # 4. Save to Database
+    # 4. CLEANUP: Get old message ID before we overwrite the user data
+    old_user_data = await db.users.find_one({"uid": user_id})
+
+    # 5. Save New Data to Database
     await update_user(user_id, {
         "google_token": token_data,
         "access": access_token,
@@ -81,21 +83,33 @@ async def handle_google_callback(request):
         "captured": 0
     })
     
-    # 5. Notify User on Telegram
+    # 6. UI Update (Delete Old -> Send New)
     try:
+        # We need to access the bot instance from the app
         bot = request.app['bot']
+        
+        # A. Delete the old "Click to Connect" message
+        if old_user_data and old_user_data.get("main_msg_id"):
+            try:
+                await bot.delete_message(chat_id=user_id, message_id=old_user_data["main_msg_id"])
+            except Exception as e:
+                # Message might already be deleted, which is fine
+                pass
+
+        # B. Send Success Message
         await bot.send_message(
             user_id, 
-            f"✅ <b>Login Successful!</b>\n\nConnected as: <code>{user_email}</code>", 
+            f"✅ <b>Login Successful!</b>\nConnected as: <code>{user_email}</code>", 
             parse_mode="HTML"
         )
-        # Force the dashboard to refresh immediately
+        
+        # C. Force the dashboard to appear immediately
         await refresh_and_repost(bot, user_id)
         
     except Exception as e:
         logger.error(f"Failed to notify user: {e}")
 
-    # 6. Show Success Page in Browser
+    # 7. Show Success Page in Browser
     html = """
     <html>
         <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
@@ -142,11 +156,15 @@ async def main():
 
     # 3. Start Web Server
     app = web.Application()
-    app['bot'] = bot
+    app['bot'] = bot # Attach bot to web app so we can message users
+    
+    # This route MUST match what you put in Google Console
     app.router.add_get('/auth/google', handle_google_callback)
     
     runner = web.AppRunner(app)
     await runner.setup()
+    
+    # Bind to 0.0.0.0 so Railway can reach it
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
     

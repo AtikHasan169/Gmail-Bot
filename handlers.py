@@ -7,7 +7,8 @@ from urllib.parse import unquote
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
-from database import update_user, get_user, users
+# --- UPDATED IMPORT: Added delete_user_data ---
+from database import update_user, get_user, users, delete_user_data
 from keyboards import get_main_menu, get_dashboard_ui, get_account_kb
 from services import update_live_ui, process_user
 from auth import get_flow
@@ -15,16 +16,21 @@ from auth import get_flow
 router = Router()
 BD_TZ = datetime.timezone(datetime.timedelta(hours=6))
 
-# --- Helper to Extract Code ---
+# --- Helper: Hunt for the code in messy links ---
 def extract_google_code(text):
-    """Hunts for the specific Google Auth Code pattern."""
-    clean_text = unquote(text)
+    """
+    Hunts for the specific Google Auth Code pattern (starting with 4/ or 4%2F)
+    anywhere in the text, ignoring surrounding URL junk.
+    """
+    if not text: return None
+    clean_text = unquote(text) # Fix %2F to /
     match = re.search(r"(4/[a-zA-Z0-9_-]+)", clean_text)
     if match:
         return match.group(1)
     return None
 
 async def check_login(bot: Bot, uid: str, message: Message = None):
+    """Checks if user is logged in. If not, sends Login UI."""
     user = await get_user(uid)
     if not user or not user.get("email"):
         text, kb = await get_dashboard_ui(uid)
@@ -36,6 +42,7 @@ async def check_login(bot: Bot, uid: str, message: Message = None):
     return True
 
 async def refresh_and_repost(bot: Bot, uid: str):
+    """Refreshes the dashboard message."""
     user = await get_user(uid)
     if user and user.get("main_msg_id"):
         try: await bot.delete_message(chat_id=uid, message_id=user["main_msg_id"])
@@ -61,7 +68,9 @@ async def cmd_start(message: Message):
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
 
-# --- SPECIFIC HANDLERS FIRST (Account & Refresh) ---
+# ---------------------------------------------------------
+# SPECIFIC HANDLERS (Must be ABOVE the Generic Text Handler)
+# ---------------------------------------------------------
 
 @router.message(F.text == "👤 Account")
 async def btn_account(message: Message, bot: Bot):
@@ -110,25 +119,29 @@ async def btn_refresh(message: Message, bot: Bot):
     finally:
         await update_live_ui(bot, uid)
 
-# --- GENERIC HANDLER LAST (The Code Hunter) ---
-# This must be at the bottom so it doesn't "eat" the buttons above.
+# ---------------------------------------------------------
+# GENERIC HANDLER (The Code Hunter)
+# Must be LAST so it doesn't "eat" button clicks
+# ---------------------------------------------------------
 
 @router.message(F.text)
 async def handle_text(message: Message, bot: Bot):
     uid = str(message.from_user.id)
     text = message.text.strip()
     
-    # Attempt to find the code
+    # 1. Check if text contains a Google Code
     code = extract_google_code(text)
     
+    # 2. If no code found, ignore (it's just random chat)
     if not code:
-        # If no code found, and it wasn't a button click (handled above), ignore it.
         return
 
-    # If code found, proceed with login
+    # 3. Code found -> Login Logic
     status = await message.answer("🔄 <b>Verifying...</b>")
     try:
         flow = get_flow(state=uid)
+        
+        # CRITICAL: Must match config.py exactly for Desktop flow
         flow.redirect_uri = "http://localhost"
         
         flow.fetch_token(code=code)
@@ -201,7 +214,8 @@ async def callbacks(q: CallbackQuery, bot: Bot):
         user = await get_user(uid)
         main_id = user.get("main_msg_id") if user else None
         
-        await users.delete_one({"uid": uid})
+        # --- CHANGED: Use delete_user_data for RAM+DB cleaning ---
+        await delete_user_data(uid)
         
         login_text, login_kb = await get_dashboard_ui(uid)
         if main_id:

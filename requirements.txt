@@ -1,4 +1,5 @@
 aiogram
-aiohttp
 motor
+aiohttp
 google-auth-oauthlib
+dnspython

@@ -2,6 +2,7 @@ import random
 import time
 import datetime
 import aiohttp
+import re  # Added for robust pattern matching
 from urllib.parse import unquote
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
@@ -14,8 +15,24 @@ from auth import get_flow
 router = Router()
 BD_TZ = datetime.timezone(datetime.timedelta(hours=6))
 
+# --- Helper to Extract Code ---
+def extract_google_code(text):
+    """
+    Hunts for the specific Google Auth Code pattern (starting with 4/ or 4%2F)
+    anywhere in the text, ignoring surrounding URL junk.
+    """
+    # Pattern: Starts with 4/ or 4%2F, followed by a long string of safe chars
+    # We unquote first to turn 4%2F into 4/
+    clean_text = unquote(text)
+    
+    # Regex looks for '4/' followed by letters, numbers, underscores, or dashes
+    match = re.search(r"(4/[a-zA-Z0-9_-]+)", clean_text)
+    
+    if match:
+        return match.group(1)
+    return None
+
 async def check_login(bot: Bot, uid: str, message: Message = None):
-    """Checks if user is logged in. If not, sends Login UI and returns False."""
     user = await get_user(uid)
     if not user or not user.get("email"):
         text, kb = await get_dashboard_ui(uid)
@@ -52,33 +69,29 @@ async def cmd_start(message: Message):
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     await update_user(uid, {"main_msg_id": sent.message_id})
 
-# --- CHANGED: Improved Regex and Extraction Logic ---
-@router.message(F.text.regexp(r"(?i)(code=|4/|4%2F)"))
-async def handle_code(message: Message, bot: Bot):
+# --- CHANGED: Catch-All Text Handler that checks for Code ---
+@router.message(F.text)
+async def handle_text(message: Message, bot: Bot):
     uid = str(message.from_user.id)
     text = message.text.strip()
     
-    # robust extraction
-    try:
-        if "code=" in text:
-            # Extract everything between 'code=' and the next '&' (or end of string)
-            raw_code = text.split("code=")[1].split("&")[0]
-        else:
-            # Assume the whole text is the code
-            raw_code = text
-            
-        # Decode URL characters (e.g. changes %2F back to /)
-        code = unquote(raw_code).strip()
-        
-    except Exception:
-        await message.answer("❌ <b>Could not read code.</b>\nPlease copy the ENTIRE link and try again.")
+    # Ignore commands or simple menu clicks
+    if text.startswith("/") or text in ["👤 Account", "↻ Refresh"]:
         return
 
+    # Attempt to find the code
+    code = extract_google_code(text)
+    
+    if not code:
+        # If it's not a code and not a command, we just ignore it
+        return
+
+    # If code found, proceed with login
     status = await message.answer("🔄 <b>Verifying...</b>")
     try:
         flow = get_flow(state=uid)
         
-        # OOB/Desktop flow sometimes requires this specific redirect_uri to match
+        # CRITICAL: Must match the config redirect_uri exactly
         flow.redirect_uri = "http://localhost"
         
         flow.fetch_token(code=code)
@@ -104,8 +117,9 @@ async def handle_code(message: Message, bot: Bot):
         await refresh_and_repost(bot, uid)
         try: await message.delete()
         except: pass
+        
     except Exception as e: 
-        await status.edit_text(f"❌ <b>Login Failed:</b>\n{str(e)}\n\nTry clicking 'Gen New' or /start to get a fresh login link.")
+        await status.edit_text(f"❌ <b>Login Failed:</b>\n{str(e)}\n\nMake sure you copied the FULL link.")
 
 @router.message(F.text == "👤 Account")
 async def btn_account(message: Message, bot: Bot):

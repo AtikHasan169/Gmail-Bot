@@ -78,19 +78,17 @@ async def cmd_start(message: Message, bot: Bot):
         try:
             await bot.delete_message(chat_id=uid, message_id=user["main_msg_id"])
         except:
-            pass # Message might already be deleted or too old
+            pass 
 
     # 3. LOGIC: Auto-Generate New Alias (Only if logged in)
     if user and user.get("email"):
         try:
             u, d = user["email"].split("@")
             mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in u)
-            
             formatted_status = (
                 f"✨ <b>New Mail Generated</b>\n"
                 f"⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}"
             )
-            
             await update_user(uid, {
                 "last_gen": f"{mixed}@{d}", 
                 "latest_otp": formatted_status, 
@@ -102,16 +100,21 @@ async def cmd_start(message: Message, bot: Bot):
     else:
         await update_user(uid, {"is_active": True}) 
     
-    # 4. UI: Send New Dashboard
+    # 4. UI PART 1: Send the Main Menu (The Bottom Buttons)
+    # We send a text message with 'reply_markup=get_main_menu()' to open the keyboard.
+    await message.answer("<b>Menu</b>", reply_markup=get_main_menu(), parse_mode="HTML")
+    
+    # 5. UI PART 2: Send the Dashboard (The Inline Buttons)
     text, kb = await get_dashboard_ui(uid)
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     
-    # 5. Save new Message ID
+    # 6. Save new Message ID (So we can refresh the Dashboard later)
     await update_user(uid, {"main_msg_id": sent.message_id})
 
-    # 6. Delete the user's "/start" command to keep chat clean
+    # 7. Delete the user's "/start" command to keep chat clean
     try: await message.delete()
     except: pass
+
 
 # --- BUTTON HANDLERS ---
 

@@ -67,16 +67,55 @@ async def refresh_and_repost(bot: Bot, uid: str):
 # --- COMMAND HANDLERS ---
 
 @router.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, bot: Bot):
     uid = str(message.from_user.id)
-    await update_user(uid, {"is_active": True}) 
     
-    #await message.answer("<b>System Initialized.</b>", reply_markup=get_main_menu())
+    # 1. Fetch User Data
+    user = await get_user(uid)
     
-    # Returns the Web Login button
+    # 2. CLEANUP: Delete Old Dashboard (if it exists)
+    if user and user.get("main_msg_id"):
+        try:
+            await bot.delete_message(chat_id=uid, message_id=user["main_msg_id"])
+        except:
+            pass # Message might already be deleted or too old
+
+    # 3. LOGIC: Auto-Generate New Alias (Only if logged in)
+    if user and user.get("email"):
+        try:
+            u, d = user["email"].split("@")
+            # Create mixed case alias (e.g. TeSt@gmail.com)
+            mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in u)
+            
+            formatted_status = (
+                f"✨ <b>New Mail Generated</b>\n"
+                f"⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}"
+            )
+            
+            # Update DB with new alias info
+            await update_user(uid, {
+                "last_gen": f"{mixed}@{d}", 
+                "latest_otp": formatted_status, 
+                "last_gen_timestamp": time.time(),
+                "is_active": True
+            })
+        except:
+            # If something fails (e.g. malformed email), just ensure active
+            await update_user(uid, {"is_active": True})
+    else:
+        # Not logged in? Just mark as active.
+        await update_user(uid, {"is_active": True}) 
+    
+    # 4. UI: Send New Dashboard
     text, kb = await get_dashboard_ui(uid)
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    
+    # 5. Save new Message ID
     await update_user(uid, {"main_msg_id": sent.message_id})
+
+    # 6. Delete the user's "/start" command to keep chat clean
+    try: await message.delete()
+    except: pass
 
 # --- BUTTON HANDLERS ---
 
@@ -97,8 +136,6 @@ async def btn_account(message: Message, bot: Bot):
         f"────────────────"
     )
     await message.answer(report, reply_markup=get_account_kb(), parse_mode="HTML")
-
-
 
 @router.message(F.text == "↻ Refresh")
 async def btn_refresh(message: Message, bot: Bot):

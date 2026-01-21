@@ -78,17 +78,21 @@ async def cmd_start(message: Message, bot: Bot):
         try:
             await bot.delete_message(chat_id=uid, message_id=user["main_msg_id"])
         except:
-            pass 
+            pass # Message might already be deleted or too old
 
     # 3. LOGIC: Auto-Generate New Alias (Only if logged in)
     if user and user.get("email"):
         try:
             u, d = user["email"].split("@")
+            # Create mixed case alias (e.g. TeSt@gmail.com)
             mixed = "".join(c.upper() if random.getrandbits(1) else c.lower() for c in u)
+            
             formatted_status = (
                 f"✨ <b>New Mail Generated</b>\n"
                 f"⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}"
             )
+            
+            # Update DB with new alias info
             await update_user(uid, {
                 "last_gen": f"{mixed}@{d}", 
                 "latest_otp": formatted_status, 
@@ -96,52 +100,31 @@ async def cmd_start(message: Message, bot: Bot):
                 "is_active": True
             })
         except:
+            # If something fails (e.g. malformed email), just ensure active
             await update_user(uid, {"is_active": True})
     else:
+        # Not logged in? Just mark as active.
         await update_user(uid, {"is_active": True}) 
     
-    # 4. UI PART 1: Send the Main Menu (The Bottom Buttons)
-    # We send a text message with 'reply_markup=get_main_menu()' to open the keyboard.
-    await message.answer("<b>Menu</b>", reply_markup=get_main_menu(), parse_mode="HTML")
-    
-    # 5. UI PART 2: Send the Dashboard (The Inline Buttons)
+    # 4. UI: Send New Dashboard
     text, kb = await get_dashboard_ui(uid)
     sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
     
-    # 6. Save new Message ID (So we can refresh the Dashboard later)
+    # 5. Save new Message ID
     await update_user(uid, {"main_msg_id": sent.message_id})
 
-    # 7. Delete the user's "/start" command to keep chat clean
+    # 6. Delete the user's "/start" command to keep chat clean
     try: await message.delete()
     except: pass
-
 
 # --- BUTTON HANDLERS ---
 
 @router.message(F.text == "👤 Account")
 async def btn_account(message: Message, bot: Bot):
     uid = str(message.from_user.id)
-    
-    # 1. Delete User Input (Clean Chat)
-    try: await message.delete()
-    except: pass
+    if not await check_login(bot, uid, message): return
 
     user = await get_user(uid)
-
-    # 2. Delete Old Dashboard (Clean UI)
-    if user and user.get("main_msg_id"):
-        try:
-            await bot.delete_message(chat_id=uid, message_id=user["main_msg_id"])
-        except: pass
-
-    # 3. Check Login (Manually handled here to control message ID)
-    if not user or not user.get("email"):
-        text, kb = await get_dashboard_ui(uid)
-        sent = await message.answer(text, reply_markup=kb, parse_mode="HTML")
-        await update_user(uid, {"main_msg_id": sent.message_id})
-        return
-
-    # 4. Send Account Info
     name = user.get("name", "Unknown")
     email = user.get("email")
     
@@ -152,10 +135,7 @@ async def btn_account(message: Message, bot: Bot):
         f"📧 <b>Email:</b> <code>{email}</code>\n"
         f"────────────────"
     )
-    sent = await message.answer(report, reply_markup=get_account_kb(), parse_mode="HTML")
-    
-    # 5. Save this as the new Main Message
-    await update_user(uid, {"main_msg_id": sent.message_id})
+    await message.answer(report, reply_markup=get_account_kb(), parse_mode="HTML")
 
 @router.message(F.text == "↻ Refresh")
 async def btn_refresh(message: Message, bot: Bot):
@@ -186,18 +166,25 @@ async def btn_refresh(message: Message, bot: Bot):
         await update_live_ui(bot, uid)
 
 # --- MANUAL FALLBACK HANDLER (The Copy-Paste Logic) ---
+# This runs if the user pastes a code manually instead of using the web link
 @router.message(F.text)
 async def handle_manual_code_paste(message: Message, bot: Bot):
     uid = str(message.from_user.id)
     text = message.text.strip()
     
+    # 1. Hunt for the code
     code = extract_google_code(text)
-    if not code: return
+    
+    # 2. If no code found, ignore it (it's just regular chat)
+    if not code:
+        return
 
+    # 3. Code found -> Manual Login Logic
     status = await message.answer("🔄 <b>Verifying Manual Code...</b>")
     try:
+        # We retrieve the flow but we MUST force localhost for manual copy-paste
         flow = get_flow(state=uid)
-        flow.redirect_uri = "http://localhost"
+        flow.redirect_uri = "http://localhost"  # Override Railway URL for manual mode
         
         flow.fetch_token(code=code)
         creds = flow.credentials
@@ -224,7 +211,7 @@ async def handle_manual_code_paste(message: Message, bot: Bot):
         except: pass
         
     except Exception as e: 
-        await status.edit_text(f"❌ <b>Manual Login Failed:</b>\n{str(e)}")
+        await status.edit_text(f"❌ <b>Manual Login Failed:</b>\n{str(e)}\n\n(Ensure you used the 'localhost' link if pasting manually)")
 
 # --- CALLBACK QUERY HANDLERS ---
 
@@ -285,14 +272,5 @@ async def callbacks(q: CallbackQuery, bot: Bot):
         
     elif action == "ui_back":
         await q.answer()
-        
-        # 1. Delete the Account Message
         try: await q.message.delete()
         except: pass
-        
-        # 2. Send the Main Dashboard
-        text, kb = await get_dashboard_ui(uid)
-        sent = await bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
-        
-        # 3. Update main_msg_id
-        await update_user(uid, {"main_msg_id": sent.message_id})

@@ -12,6 +12,10 @@ from database import users, seen_msgs, update_user, get_user
 TIMEOUT = aiohttp.ClientTimeout(total=5)
 BD_TZ = datetime.timezone(datetime.timedelta(hours=6))
 
+# FIX: Memory cache to track who we have already refreshed the UI for.
+# This ensures we only force-refresh the dashboard once after login.
+ACTIVE_SESSION_CACHE = {}
+
 async def refresh_google_token(uid, session):
     """Refreshes the Google Access Token if expired."""
     user = await get_user(uid)
@@ -80,7 +84,22 @@ async def process_user(bot, uid, session, manual=False):
     if not manual and not user.get("is_active", True): return
 
     access = user.get("access")
-    if not access: return
+    
+    # --- LOGOUT HANDLER ---
+    # If user has no access token (logged out), remove them from our cache
+    # so that next time they login, we trigger the UI refresh again.
+    if not access: 
+        if uid in ACTIVE_SESSION_CACHE:
+             del ACTIVE_SESSION_CACHE[uid]
+        return
+
+    # --- LOGIN UI REFRESH FIX ---
+    # If the user has an access token but is NOT in our cache, it means
+    # they just logged in (or the bot just restarted).
+    # We force the UI to update instantly to show the "Gen New" buttons.
+    if uid not in ACTIVE_SESSION_CACHE:
+        await update_live_ui(bot, uid)
+        ACTIVE_SESSION_CACHE[uid] = True
 
     headers = {"Authorization": f"Bearer {access}"}
     new_ids = []
@@ -154,7 +173,9 @@ async def background_watcher(bot):
     async with aiohttp.ClientSession() as session:
         while True:
             try:
-                cursor = users.find({"access": {"$exists": True}, "is_active": True})
+                # We fetch users who have an access token OR are active.
+                # This ensures we catch newly logged-in users too.
+                cursor = users.find({"is_active": True})
                 user_list = await cursor.to_list(None)
                 
                 if user_list: 

@@ -16,20 +16,25 @@ oauth_states = db['oauth_states'] # Stores the secret login tokens
 server_lock = db['server_lock']   # Stores the 'Killer Protocol' lock
 
 # --- RAM CACHE ---
-# A simple memory cache to speed up the bot and reduce database hits
+# We keep this variable so imports in other files don't break,
+# but we modify the logic to prioritize Database reads.
 USER_CACHE = {}
 
 async def get_user(uid: str):
-    # 1. Try to get from RAM first (Super Fast)
-    if uid in USER_CACHE:
-        return USER_CACHE[uid]
-    
-    # 2. If not in RAM, get from Database (Slower)
+    """
+    Retrieves user data.
+    FIX: We now ALWAYS fetch from MongoDB first. 
+    This ensures that when Netlify updates the DB, the Railway bot sees it instantly.
+    """
+    # 1. Always fetch directly from Database
     user = await users.find_one({"uid": uid})
     
-    # 3. Save to RAM for next time
+    # 2. Update RAM for consistency (optional but good practice)
     if user:
         USER_CACHE[uid] = user
+    elif uid in USER_CACHE:
+        # If user was deleted in DB but is still in RAM, clear RAM
+        del USER_CACHE[uid]
         
     return user
 

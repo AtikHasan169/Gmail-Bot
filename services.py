@@ -11,7 +11,10 @@ from database import users, seen_msgs, update_user, get_user
 # --- CONSTANTS ---
 TIMEOUT = aiohttp.ClientTimeout(total=5)
 BD_TZ = datetime.timezone(datetime.timedelta(hours=6))
-ACTIVE_SESSION_CACHE = {}
+
+# --- SELF-HEALING MEMORY ---
+# Stores the last state the user saw ('login' or 'dashboard')
+UI_STATE_CACHE = {} 
 
 async def refresh_google_token(uid, session, refresh_token):
     if not refresh_token: return None
@@ -37,18 +40,14 @@ async def fetch_body_task(access, mid, session):
                 msg = message_from_bytes(urlsafe_b64decode(raw))
                 if msg.is_multipart():
                     for part in msg.walk():
-                        if part.get_content_type() == "text/plain": 
-                            return part.get_payload(decode=True).decode(errors="ignore")
+                        if part.get_content_type() == "text/plain": return part.get_payload(decode=True).decode(errors="ignore")
                 return msg.get_payload(decode=True).decode(errors="ignore")
             except: return None
     except: return None
 
 async def update_live_ui(bot, uid, fresh_user=None):
     from keyboards import get_dashboard_ui
-    
-    # --- CRITICAL FIX ---
-    # We pass 'fresh_user' directly to the UI builder.
-    # This ensures the dashboard uses the data we JUST found, not old DB data.
+    # --- PASS DATA DIRECTLY TO KEYBOARD ---
     text, kb = await get_dashboard_ui(uid, user_data=fresh_user)
     
     if fresh_user:
@@ -58,12 +57,13 @@ async def update_live_ui(bot, uid, fresh_user=None):
         msg_id = u.get("main_msg_id") if u else None
 
     if not msg_id: return
-    try: 
-        await bot.edit_message_text(chat_id=uid, message_id=msg_id, text=text, reply_markup=kb, parse_mode="HTML")
-    except: pass
+    
+    # Try to edit the message. If it fails, we let the Exception propagate
+    # so the caller knows the update failed.
+    await bot.edit_message_text(chat_id=uid, message_id=msg_id, text=text, reply_markup=kb, parse_mode="HTML")
 
 async def process_user(bot, uid, session, manual=False, user_data=None):
-    # Use passed data if available
+    # Use passed data if available (FRESH)
     if user_data: user = user_data
     else: user = await get_user(uid)
 
@@ -72,19 +72,32 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
 
     access = user.get("access")
     refresh_token = user.get("refresh")
-    
-    # Logout Handler
-    if not access: 
-        if uid in ACTIVE_SESSION_CACHE: del ACTIVE_SESSION_CACHE[uid]
-        return
+    email = user.get("email")
 
-    # --- DETECTION HANDLER ---
-    # If we see 'access' (logged in) but haven't updated UI yet -> DO IT NOW.
-    if uid not in ACTIVE_SESSION_CACHE:
-        # Pass 'user' (which contains the new email) to update_live_ui
-        await update_live_ui(bot, uid, fresh_user=user)
-        ACTIVE_SESSION_CACHE[uid] = True
+    # --- SELF-HEALING UI LOGIC ---
+    # Determine what screen the user SHOULD see
+    target_state = "dashboard" if (access and email) else "login"
+    current_state = UI_STATE_CACHE.get(uid)
 
+    # If the user sees the wrong screen, FORCE UPDATE
+    if current_state != target_state:
+        try:
+            await update_live_ui(bot, uid, fresh_user=user)
+            # Only update our memory if the Telegram update succeeded
+            UI_STATE_CACHE[uid] = target_state
+        except Exception:
+            # If update failed, we DO NOT update cache. 
+            # This causes the bot to RETRY immediately on the next loop (0.5s later).
+            pass
+            
+    # Logout Logic (Clear cache so we force login screen next time)
+    if not access and uid in UI_STATE_CACHE:
+         del UI_STATE_CACHE[uid]
+         return
+
+    if not access: return 
+
+    # --- EMAIL CHECKING LOGIC ---
     headers = {"Authorization": f"Bearer {access}"}
     new_ids = []
     
@@ -118,7 +131,7 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
         codes = re.findall(r"\b\d{5,8}\b", body)
         if codes:
             otp_code = codes[0]
-            formatted = (f"✨ <b>New OTP Received</b>\nf\"⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}")
+            formatted = (f"✨ <b>New OTP Received</b>\n⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}")
             await update_user(uid, {"latest_otp": formatted, "last_otp_raw": otp_code, "last_otp_timestamp": time.time()})
             await users.update_one({"uid": uid}, {"$inc": {"captured": 1}})
             new_otp = True
@@ -126,17 +139,21 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
 
     await update_user(uid, {"last_check": datetime.datetime.now(BD_TZ).strftime("%I:%M:%S %p")})
     
-    if new_otp: await update_live_ui(bot, uid, fresh_user=user)
+    # If new OTP arrived, force UI update
+    if new_otp: 
+        try:
+            await update_live_ui(bot, uid, fresh_user=user)
+        except: pass
 
 async def background_watcher(bot):
     async with aiohttp.ClientSession() as session:
         while True:
             try:
-                # 1. DETECT SUCCESS (Fetch fresh data from DB)
+                # 1. Fetch FRESH data from DB
                 cursor = users.find({"is_active": True})
                 user_list = await cursor.to_list(None)
                 
-                # 2. TRIGGER CHANGE (Pass fresh data to processor)
+                # 2. Pass FRESH data to processor
                 if user_list: 
                     await asyncio.gather(*(process_user(bot, u["uid"], session, user_data=u) for u in user_list), return_exceptions=True)
             except: pass

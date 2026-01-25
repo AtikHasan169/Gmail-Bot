@@ -19,13 +19,12 @@ def get_account_kb():
         [InlineKeyboardButton(text="🔙 Back", callback_data="ui_back")]
     ])
 
-# --- FIX: Added 'user_data' parameter ---
+# --- CRITICAL FIX: Use 'user_data' if provided ---
 async def get_dashboard_ui(uid_str: str, user_data: dict = None):
     """
     Generates the Dashboard UI.
     If 'user_data' is provided, it uses it directly to avoid database delays.
     """
-    # 1. Use the data passed from the Watcher (Fresh), otherwise check DB (Stale)
     if user_data:
         user = user_data
     else:
@@ -33,7 +32,7 @@ async def get_dashboard_ui(uid_str: str, user_data: dict = None):
     
     # CASE 1: User NOT logged in (Generate the Login Link)
     if not user or not user.get("email"):
-        # Generate State Logic...
+        # Generate State
         state_token = uuid.uuid4().hex
         try:
             await db.oauth_states.insert_one({

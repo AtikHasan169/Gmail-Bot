@@ -6,7 +6,7 @@ import aiohttp
 from base64 import urlsafe_b64decode
 from email import message_from_bytes
 from config import CLIENT_ID, CLIENT_SECRET
-from database import users, seen_msgs, update_user, get_user, USER_CACHE
+from database import users, seen_msgs, update_user, get_user
 
 # --- CONSTANTS ---
 TIMEOUT = aiohttp.ClientTimeout(total=5)
@@ -58,16 +58,12 @@ async def fetch_body_task(access, mid, session):
 async def update_live_ui(bot, uid, fresh_user=None):
     """
     Updates the user's dashboard.
-    FIX: Accepts 'fresh_user' to force-update the cache before generating UI.
+    FIX: Now passes 'fresh_user' directly to keyboards.py
     """
-    # 1. Force-update the RAM cache with our fresh data so keyboards.py sees it
-    if fresh_user:
-        USER_CACHE[uid] = fresh_user
-
     from keyboards import get_dashboard_ui
-    text, kb = await get_dashboard_ui(uid)
+    # --- CRITICAL FIX: Pass the user object so keyboards.py doesn't fetch old data ---
+    text, kb = await get_dashboard_ui(uid, user_data=fresh_user)
     
-    # 2. Get the Message ID (Use fresh_user if available)
     if fresh_user:
         msg_id = fresh_user.get("main_msg_id")
     else:
@@ -90,7 +86,6 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
     """
     Checks Gmail. 
     """
-    # FIX: Use passed user_data (it's fresher), otherwise fetch from DB
     if user_data:
         user = user_data
     else:
@@ -109,8 +104,7 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
         return
 
     # --- AUTO REFRESH FIX ---
-    # If we see an access token but haven't refreshed the UI yet, DO IT NOW.
-    # We pass 'user' to update_live_ui so it knows we are logged in.
+    # We pass 'user' (which HAS the email) to update_live_ui
     if uid not in ACTIVE_SESSION_CACHE:
         await update_live_ui(bot, uid, fresh_user=user)
         ACTIVE_SESSION_CACHE[uid] = True
@@ -159,7 +153,6 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
                 f"⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}"
             )
             
-            # Update user and ensure cache is fresh for the UI update
             await update_user(uid, {
                 "latest_otp": formatted, 
                 "last_otp_raw": otp_code,
@@ -173,7 +166,7 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
 
     await update_user(uid, {"last_check": datetime.datetime.now(BD_TZ).strftime("%I:%M:%S %p")})
     
-    if new_otp: await update_live_ui(bot, uid)
+    if new_otp: await update_live_ui(bot, uid, fresh_user=user)
 
 async def background_watcher(bot):
     """

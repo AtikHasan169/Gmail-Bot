@@ -19,9 +19,16 @@ def get_account_kb():
         [InlineKeyboardButton(text="🔙 Back", callback_data="ui_back")]
     ])
 
-
-async def get_dashboard_ui(uid_str: str):
-    user = await get_user(uid_str)
+# --- FIX: Added 'user_data' parameter ---
+async def get_dashboard_ui(uid_str: str, user_data: dict = None):
+    """
+    Generates the Dashboard UI.
+    If 'user_data' is provided, it uses it directly to avoid database delays.
+    """
+    if user_data:
+        user = user_data
+    else:
+        user = await get_user(uid_str)
     
     # CASE 1: User NOT logged in (Generate the Login Link)
     if not user or not user.get("email"):
@@ -35,15 +42,13 @@ async def get_dashboard_ui(uid_str: str):
                 "user_id": int(uid_str),
                 "created_at": time.time()
             })
-            print(f"✅ DEBUG: Saved State {state_token} for User {uid_str}") 
         except Exception as e:
-            print(f"❌ CRITICAL ERROR: Could not save state to DB: {e}")
+            logger.error(f"Error saving state: {e}")
         
         # 3. Generate Link (FORCE STATE)
         flow = get_flow(state=state_token)
         
-        # --- THE FIX IS HERE ---
-        # We explicitly pass 'state=state_token' to ensure Google uses OUR id, not a random one.
+        # Pass state explicitly
         auth_url, _ = flow.authorization_url(prompt='consent', state=state_token)
         
         text = (

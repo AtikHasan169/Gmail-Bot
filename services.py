@@ -12,7 +12,7 @@ from database import users, seen_msgs, update_user, get_user
 TIMEOUT = aiohttp.ClientTimeout(total=5)
 BD_TZ = datetime.timezone(datetime.timedelta(hours=6))
 
-# Tracks which users we have already auto-refreshed to avoid spamming updates
+# Tracks active sessions so we only trigger the "Welcome" message once per login
 ACTIVE_SESSION_CACHE = {}
 
 async def refresh_google_token(uid, session, refresh_token):
@@ -36,7 +36,7 @@ async def refresh_google_token(uid, session, refresh_token):
     return None
 
 async def fetch_body_task(access, mid, session):
-    """Fetches a single email body (Runs in Parallel)."""
+    """Fetches a single email body (Runs in Parallel for speed)."""
     headers = {"Authorization": f"Bearer {access}"}
     try:
         async with session.get(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}?format=raw", headers=headers, timeout=TIMEOUT) as r:
@@ -55,17 +55,36 @@ async def fetch_body_task(access, mid, session):
             except: return None
     except: return None
 
-async def update_live_ui(bot, uid, fresh_user=None):
+async def send_fresh_dashboard(bot, uid, user_data):
     """
-    Updates the user's dashboard.
-    Crucial Fix: Accepts 'fresh_user' to force-update using the data we JUST found.
+    THE FIX: Deletes the old message and sends a BRAND NEW Dashboard.
+    This ensures the user sees the menu immediately after login.
     """
     from keyboards import get_dashboard_ui
+    text, kb = await get_dashboard_ui(uid, user_data=user_data)
     
-    # 1. Pass the FRESH data to the keyboard builder (Bypasses Database Stale Cache)
+    # 1. Try to delete the old "Auth Required" message to clean up chat
+    old_msg_id = user_data.get("main_msg_id")
+    if old_msg_id:
+        try:
+            await bot.delete_message(chat_id=uid, message_id=old_msg_id)
+        except:
+            pass # If message is too old or missing, ignore error
+
+    # 2. SEND NEW MESSAGE
+    try:
+        sent_msg = await bot.send_message(chat_id=uid, text=text, reply_markup=kb, parse_mode="HTML")
+        
+        # 3. Save the NEW ID so future OTP updates edit THIS message
+        await update_user(uid, {"main_msg_id": sent_msg.message_id})
+    except Exception as e:
+        print(f"Failed to send dashboard: {e}")
+
+async def update_live_ui(bot, uid, fresh_user=None):
+    """Standard UI update for OTPs (Edits existing message)."""
+    from keyboards import get_dashboard_ui
     text, kb = await get_dashboard_ui(uid, user_data=fresh_user)
     
-    # 2. Get the correct Message ID
     if fresh_user:
         msg_id = fresh_user.get("main_msg_id")
     else:
@@ -85,10 +104,8 @@ async def update_live_ui(bot, uid, fresh_user=None):
     except: pass
 
 async def process_user(bot, uid, session, manual=False, user_data=None):
-    """
-    Checks Gmail. 
-    """
-    # FIX: Use passed user_data if available (it's fresher), otherwise fetch from DB
+    """Main Logic: Checks user status and emails."""
+    # Use passed user_data if available (FRESH), otherwise fetch from DB
     if user_data:
         user = user_data
     else:
@@ -102,17 +119,19 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
     
     # --- LOGOUT HANDLER ---
     if not access: 
+        # If user logs out, remove from cache so we treat them as new next time
         if uid in ACTIVE_SESSION_CACHE:
              del ACTIVE_SESSION_CACHE[uid]
         return
 
-    # --- AUTO REFRESH FIX ---
-    # If we see an access token but haven't refreshed the UI yet, DO IT NOW.
-    # We pass 'user' to update_live_ui so it knows we are logged in.
+    # --- THE FIX: FRESH START ON LOGIN ---
+    # If we detect you are logged in, but we haven't set up the session yet:
     if uid not in ACTIVE_SESSION_CACHE:
-        await update_live_ui(bot, uid, fresh_user=user)
+        # SEND A FRESH MESSAGE (Simulates /start)
+        await send_fresh_dashboard(bot, uid, user_data=user)
         ACTIVE_SESSION_CACHE[uid] = True
 
+    # --- EMAIL CHECKING ---
     headers = {"Authorization": f"Bearer {access}"}
     new_ids = []
     
@@ -143,7 +162,7 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
     to_fetch = [mid for mid in new_ids if not await seen_msgs.find_one({"key": f"{uid}:{mid}"})]
     if not to_fetch: return
 
-    # --- Fetch all new bodies in parallel (The part I removed earlier) ---
+    # --- Fetch all new bodies in parallel ---
     tasks = [fetch_body_task(access, mid, session) for mid in to_fetch]
     bodies = await asyncio.gather(*tasks)
     
@@ -160,7 +179,6 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
                 f"⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}"
             )
             
-            # Update user and ensure cache is fresh for the UI update
             await update_user(uid, {
                 "latest_otp": formatted, 
                 "last_otp_raw": otp_code,
@@ -174,7 +192,7 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
 
     await update_user(uid, {"last_check": datetime.datetime.now(BD_TZ).strftime("%I:%M:%S %p")})
     
-    # Force UI update if new OTP found
+    # If OTP comes, we edit the EXISTING message
     if new_otp: await update_live_ui(bot, uid, fresh_user=user)
 
 async def background_watcher(bot):
@@ -190,7 +208,6 @@ async def background_watcher(bot):
                 
                 if user_list: 
                     # 2. Pass this FRESH data directly to process_user
-                    # This fixes the sync issue because we don't look at the cache
                     await asyncio.gather(*(process_user(bot, u["uid"], session, user_data=u) for u in user_list), return_exceptions=True)
             except: pass
             

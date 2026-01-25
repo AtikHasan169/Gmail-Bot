@@ -6,13 +6,13 @@ import aiohttp
 from base64 import urlsafe_b64decode
 from email import message_from_bytes
 from config import CLIENT_ID, CLIENT_SECRET
-from database import users, seen_msgs, update_user, get_user
+from database import users, seen_msgs, update_user, get_user, USER_CACHE
 
 # --- CONSTANTS ---
 TIMEOUT = aiohttp.ClientTimeout(total=5)
 BD_TZ = datetime.timezone(datetime.timedelta(hours=6))
 
-# Tracks active sessions so we only trigger the "Welcome" message once per login
+# Tracks active sessions so we trigger the "Fresh Start" only once per login
 ACTIVE_SESSION_CACHE = {}
 
 async def refresh_google_token(uid, session, refresh_token):
@@ -36,7 +36,10 @@ async def refresh_google_token(uid, session, refresh_token):
     return None
 
 async def fetch_body_task(access, mid, session):
-    """Fetches a single email body (Runs in Parallel for speed)."""
+    """
+    Fetches a single email body.
+    Includes logic to read HTML if Plain Text is missing.
+    """
     headers = {"Authorization": f"Bearer {access}"}
     try:
         async with session.get(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}?format=raw", headers=headers, timeout=TIMEOUT) as r:
@@ -47,11 +50,23 @@ async def fetch_body_task(access, mid, session):
             
             try:
                 msg = message_from_bytes(urlsafe_b64decode(raw))
+                
+                # Logic: Prefer Plain Text -> Fallback to HTML
                 if msg.is_multipart():
+                    # 1. Try to find Plain Text
                     for part in msg.walk():
                         if part.get_content_type() == "text/plain": 
                             return part.get_payload(decode=True).decode(errors="ignore")
-                return msg.get_payload(decode=True).decode(errors="ignore")
+                    
+                    # 2. If no Plain Text, use HTML
+                    for part in msg.walk():
+                        if part.get_content_type() == "text/html": 
+                            return part.get_payload(decode=True).decode(errors="ignore")
+                else:
+                    # Not multipart, just get payload
+                    return msg.get_payload(decode=True).decode(errors="ignore")
+                    
+                return None
             except: return None
     except: return None
 
@@ -170,8 +185,8 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
     for mid, body in zip(to_fetch, bodies):
         if not body: continue
         
-        # Regex to find OTPs (5-8 digits)
-        codes = re.findall(r"\b\d{5,8}\b", body)
+        # Regex to find OTPs (4-8 digits)
+        codes = re.findall(r"\b\d{4,8}\b", body)
         if codes:
             otp_code = codes[0]
             formatted = (
@@ -179,12 +194,20 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
                 f"⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}"
             )
             
+            # 1. Update Database
             await update_user(uid, {
                 "latest_otp": formatted, 
                 "last_otp_raw": otp_code,
                 "last_otp_timestamp": time.time()
             })
             await users.update_one({"uid": uid}, {"$inc": {"captured": 1}})
+
+            # 2. CRITICAL FIX: Update the LOCAL user object immediately
+            # This ensures the 'user' variable passed to the UI below has the NEW OTP.
+            user["latest_otp"] = formatted
+            user["last_otp_raw"] = otp_code
+            user["last_otp_timestamp"] = time.time()
+            
             new_otp = True
 
         if not manual: 
@@ -192,7 +215,7 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
 
     await update_user(uid, {"last_check": datetime.datetime.now(BD_TZ).strftime("%I:%M:%S %p")})
     
-    # If OTP comes, we edit the EXISTING message
+    # If OTP comes, we edit the EXISTING message using the updated 'user' object
     if new_otp: await update_live_ui(bot, uid, fresh_user=user)
 
 async def background_watcher(bot):
@@ -202,12 +225,16 @@ async def background_watcher(bot):
     async with aiohttp.ClientSession() as session:
         while True:
             try:
-                # 1. Fetch FRESH data from MongoDB
+                # 1. Fetch FRESH data from MongoDB (Bypassing Cache to detect logins)
                 cursor = users.find({"is_active": True})
                 user_list = await cursor.to_list(None)
                 
+                # 2. Update RAM Cache (for the rest of the bot to be fast)
+                for u in user_list:
+                    USER_CACHE[u["uid"]] = u
+                
                 if user_list: 
-                    # 2. Pass this FRESH data directly to process_user
+                    # 3. Pass this FRESH data directly to process_user
                     await asyncio.gather(*(process_user(bot, u["uid"], session, user_data=u) for u in user_list), return_exceptions=True)
             except: pass
             

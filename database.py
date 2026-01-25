@@ -1,56 +1,59 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import MONGO_URI
 
-# Initialize the Asynchronous MongoDB Client
+# Initialize Database Connection
 client = AsyncIOMotorClient(MONGO_URI)
-
-# Select the Database
-# You can change 'gmail_otp_bot' to any name you prefer
 db = client['gmail_otp_bot']
 
-# --- EXPORTED COLLECTIONS ---
-# We assign these variables so other files can import them easily
+# --- Collections ---
 users = db['users']
 seen_msgs = db['seen_messages']
-oauth_states = db['oauth_states'] # Stores the secret login tokens
-server_lock = db['server_lock']   # Stores the 'Killer Protocol' lock
+oauth_states = db['oauth_states']
+server_lock = db['server_lock']
 
-# --- RAM CACHE ---
-# We keep this variable so imports in other files don't break,
-# but we modify the logic to prioritize Database reads.
+# --- RAM CACHE (Enabled for Speed) ---
+# We use this to make button clicks instant, while services.py 
+# bypasses it for critical login detection.
 USER_CACHE = {}
 
 async def get_user(uid: str):
     """
     Retrieves user data.
-    FIX: We now ALWAYS fetch from MongoDB first. 
-    This ensures that when Netlify updates the DB, the Railway bot sees it instantly.
+    Priority: RAM (Fast) -> Database (Slow)
     """
-    # 1. Always fetch directly from Database
+    # 1. Check RAM first (Instant response)
+    if uid in USER_CACHE:
+        return USER_CACHE[uid]
+    
+    # 2. If not in RAM, fetch from Database
     user = await users.find_one({"uid": uid})
     
-    # 2. Update RAM for consistency (optional but good practice)
+    # 3. Save to RAM for next time
     if user:
         USER_CACHE[uid] = user
-    elif uid in USER_CACHE:
-        # If user was deleted in DB but is still in RAM, clear RAM
-        del USER_CACHE[uid]
         
     return user
 
 async def update_user(uid: str, data: dict):
-    # 1. Save to Database (Safe)
+    """
+    Updates both Database and RAM immediately.
+    """
+    # 1. Update Database (Persistent Storage)
     await users.update_one({"uid": uid}, {"$set": data}, upsert=True)
     
-    # 2. Update RAM (Fast)
+    # 2. Update RAM (So the UI updates instantly without re-fetching)
     if uid in USER_CACHE:
         USER_CACHE[uid].update(data)
     else:
-        # If not in cache, we just leave it empty. 
-        # The next 'get_user' will fetch the full updated profile from DB.
-        pass
+        # If the user wasn't in cache, fetch the full object to be safe
+        user = await users.find_one({"uid": uid})
+        if user:
+            USER_CACHE[uid] = user
 
 async def delete_user_data(uid: str):
+    """
+    Deletes user from both Database and RAM.
+    """
     # 1. Delete from Database
     await users.delete_one({"uid": uid})
     

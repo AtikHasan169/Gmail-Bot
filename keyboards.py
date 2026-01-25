@@ -19,12 +19,12 @@ def get_account_kb():
         [InlineKeyboardButton(text="🔙 Back", callback_data="ui_back")]
     ])
 
-# --- CRITICAL FIX: Use 'user_data' if provided ---
 async def get_dashboard_ui(uid_str: str, user_data: dict = None):
     """
     Generates the Dashboard UI.
     If 'user_data' is provided, it uses it directly to avoid database delays.
     """
+    # 1. Use the data passed from the Watcher (Fresh), otherwise check DB (Stale)
     if user_data:
         user = user_data
     else:
@@ -32,9 +32,13 @@ async def get_dashboard_ui(uid_str: str, user_data: dict = None):
     
     # CASE 1: User NOT logged in (Generate the Login Link)
     if not user or not user.get("email"):
-        # Generate State
+        # 1. Generate a unique "Secret ID" (State)
         state_token = uuid.uuid4().hex
+        
+        # 2. SAVE to Database
         try:
+            # Note: We save uid as INT here, Netlify will convert to String later.
+            # The new auth.js logic handles this mismatch perfectly.
             await db.oauth_states.insert_one({
                 "state": state_token,
                 "user_id": int(uid_str),
@@ -43,7 +47,10 @@ async def get_dashboard_ui(uid_str: str, user_data: dict = None):
         except Exception as e:
             logger.error(f"Error saving state: {e}")
         
+        # 3. Generate Link (FORCE STATE)
         flow = get_flow(state=state_token)
+        
+        # Pass state explicitly
         auth_url, _ = flow.authorization_url(prompt='consent', state=state_token)
         
         text = (
@@ -71,7 +78,13 @@ async def get_dashboard_ui(uid_str: str, user_data: dict = None):
     if raw_otp:
         otp_ts = user.get("last_otp_timestamp", 0)
         gen_ts = user.get("last_gen_timestamp", 0)
-        label = f"🚨 Last: {raw_otp}" if otp_ts < gen_ts else f"✨ New: {raw_otp}"
+        
+        # Compare timestamps to decide if we show "New" or "Last"
+        if otp_ts < gen_ts:
+            label = f"🚨 Last: {raw_otp}"
+        else:
+            label = f"✨ New: {raw_otp}"
+            
         kb_rows.append([InlineKeyboardButton(text=label, copy_text=CopyTextButton(text=raw_otp))])
         
     if gen_alias:

@@ -6,13 +6,13 @@ import aiohttp
 from base64 import urlsafe_b64decode
 from email import message_from_bytes
 from config import CLIENT_ID, CLIENT_SECRET
-from database import users, seen_msgs, update_user, get_user
+from database import users, seen_msgs, update_user, get_user, USER_CACHE
 
 # --- CONSTANTS ---
 TIMEOUT = aiohttp.ClientTimeout(total=5)
 BD_TZ = datetime.timezone(datetime.timedelta(hours=6))
 
-# Tracks which users we have already "Auto-Refreshed" after login
+# Tracks users we have already auto-refreshed to avoid looping
 ACTIVE_SESSION_CACHE = {}
 
 async def refresh_google_token(uid, session, refresh_token):
@@ -55,20 +55,31 @@ async def fetch_body_task(access, mid, session):
             except: return None
     except: return None
 
-async def update_live_ui(bot, uid):
-    """Updates the user's dashboard."""
+async def update_live_ui(bot, uid, fresh_user=None):
+    """
+    Updates the user's dashboard.
+    FIX: Accepts 'fresh_user' to force-update the cache before generating UI.
+    """
+    # 1. Force-update the RAM cache with our fresh data so keyboards.py sees it
+    if fresh_user:
+        USER_CACHE[uid] = fresh_user
+
     from keyboards import get_dashboard_ui
-    # Force get_dashboard_ui to see the latest state
     text, kb = await get_dashboard_ui(uid)
     
-    # We fetch user again to get the msg_id, ensuring we have the ID
-    user = await get_user(uid)
-    if not user or not user.get("main_msg_id"): return
+    # 2. Get the Message ID (Use fresh_user if available)
+    if fresh_user:
+        msg_id = fresh_user.get("main_msg_id")
+    else:
+        u = await get_user(uid)
+        msg_id = u.get("main_msg_id") if u else None
+
+    if not msg_id: return
     
     try: 
         await bot.edit_message_text(
             chat_id=uid, 
-            message_id=user["main_msg_id"], 
+            message_id=msg_id, 
             text=text, 
             reply_markup=kb, 
             parse_mode="HTML"
@@ -79,7 +90,7 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
     """
     Checks Gmail. 
     """
-    # FIX: Use passed user_data if available (it's fresher), otherwise fetch from DB
+    # FIX: Use passed user_data (it's fresher), otherwise fetch from DB
     if user_data:
         user = user_data
     else:
@@ -99,9 +110,9 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
 
     # --- AUTO REFRESH FIX ---
     # If we see an access token but haven't refreshed the UI yet, DO IT NOW.
+    # We pass 'user' to update_live_ui so it knows we are logged in.
     if uid not in ACTIVE_SESSION_CACHE:
-        # We perform a quick UI update to switch from "Login" to "Dashboard"
-        await update_live_ui(bot, uid)
+        await update_live_ui(bot, uid, fresh_user=user)
         ACTIVE_SESSION_CACHE[uid] = True
 
     headers = {"Authorization": f"Bearer {access}"}
@@ -112,7 +123,6 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
         
         async with session.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", params=params, headers=headers, timeout=TIMEOUT) as r:
                 if r.status == 401:
-                    # Token expired, refresh it using the passed refresh_token
                     access = await refresh_google_token(uid, session, refresh_token)
                     if not access: return
                     headers["Authorization"] = f"Bearer {access}"
@@ -149,6 +159,7 @@ async def process_user(bot, uid, session, manual=False, user_data=None):
                 f"⏰ {datetime.datetime.now(BD_TZ).strftime('%I:%M:%S %p')}"
             )
             
+            # Update user and ensure cache is fresh for the UI update
             await update_user(uid, {
                 "latest_otp": formatted, 
                 "last_otp_raw": otp_code,
@@ -176,8 +187,7 @@ async def background_watcher(bot):
                 user_list = await cursor.to_list(None)
                 
                 if user_list: 
-                    # 2. Pass this FRESH data (u) directly to process_user
-                    # This bypasses any stale cache in get_user
+                    # 2. Pass this FRESH data directly to process_user
                     await asyncio.gather(*(process_user(bot, u["uid"], session, user_data=u) for u in user_list), return_exceptions=True)
             except: pass
             
